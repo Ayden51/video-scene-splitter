@@ -115,7 +115,35 @@ ffmpeg -version   # Should display FFmpeg version info
 
 ## 📖 Usage
 
-### Quick Start Scripts
+### Basic Setup
+
+1. **Create the input directory** (if it doesn't exist):
+   ```bash
+   mkdir input
+   ```
+
+2. **Place your video file** in the `input/` directory:
+   ```bash
+   # Example: Copy your video to the input folder
+   cp /path/to/your/video.mp4 input/
+   ```
+
+### Configuration
+
+Edit `main.py` to specify your video file path:
+
+```python
+# Configuration
+video_path = "input/your_video.mp4"  # Change this to your video filename
+output_dir = "output"
+threshold = 30.0  # Default: 30.0 (typical range: 15-40)
+min_scene_duration = 1.5  # Default: 1.5 seconds
+debug = False  # Set to True for detailed analysis and debug images
+```
+
+### Execution
+
+#### With Scripts
 
 If you installed the development tools (`uv sync --all-extras`), you can use convenient task runner scripts:
 
@@ -124,9 +152,7 @@ If you installed the development tools (`uv sync --all-extras`), you can use con
 uv run poe start
 ```
 
-**Note**: These scripts are a temporary convenience feature. A proper CLI interface with argument parsing is planned for future releases.
-
-### Available Scripts
+**Available Scripts:**
 
 | Script | Command | Description |
 |--------|---------|-------------|
@@ -146,29 +172,41 @@ To see all available scripts:
 uv run poe
 ```
 
-### Basic Usage (Without Scripts)
+**Note**: These scripts are a temporary convenience feature. A proper CLI interface with argument parsing is planned for future releases.
 
-1. Place your video file in the `input/` directory
-2. Edit `main.py` to specify your video file path
-3. Run the script:
+#### Without Scripts
+
+Run the script directly using Python:
 
 ```bash
 python main.py
-# Or with uv:
+```
+
+Or with uv:
+
+```bash
 uv run main.py
 ```
+
+### Output
+
+After running the script, all results will be saved in the `output/` folder:
+
+- **Video files**: `{original_name}_scene_001.mp4`, `{original_name}_scene_002.mp4`, etc.
+- **Timestamp file**: `timestamps.txt` with scene start times
+- **Debug files** (if debug mode is enabled): Before/after frames and metrics CSV
 
 ### Programmatic Usage
 
 ```python
-from main import VideoSceneSplitter
+from video_scene_splitter import VideoSceneSplitter
 
 # Create splitter instance
 splitter = VideoSceneSplitter(
     video_path="input/my_video.mp4",
     output_dir="output",
-    threshold=20.0,
-    min_scene_duration=0.5
+    threshold=30.0,
+    min_scene_duration=1.5
 )
 
 # Detect scenes (with debug mode enabled)
@@ -199,141 +237,34 @@ timestamps = splitter.detect_scenes(debug=False)
 splitter.save_timestamps("my_timestamps.txt")
 ```
 
-## 🧪 Testing
+## 📁 Output Files
 
-This project includes a comprehensive test suite with 83 tests covering all core functionality. The test suite achieves **99.42% code coverage** and includes unit tests, integration tests, and edge case validation.
+After running the script, you'll find the following in your output directory:
 
-### Running Tests
+### Video Files
 
-#### Basic Test Execution
+- `{original_name}_scene_001.mp4` - First scene
+- `{original_name}_scene_002.mp4` - Second scene
+- `{original_name}_scene_NNN.mp4` - Nth scene
 
-Run the full test suite:
+### Timestamp File
 
-```bash
-# Using task runner (recommended)
-uv run poe test
+- `timestamps.txt` - List of all scene start times with metadata
 
-# Or using pytest directly
-uv run pytest
+### Debug Files (when debug=True)
 
-# Or with pip installation
-pytest
+- `cut_001_before_fXXXX.jpg` - Frame before first cut
+- `cut_001_after_fXXXX.jpg` - Frame after first cut
+- `cut_detection_metrics.csv` - Detailed frame-by-frame analysis data
+
+### Metrics CSV Format
+
+```csv
+Frame,Timestamp,Hist_Distance,Pixel_Diff,Changed_Ratio%
+1,0.03,5.23,12.45,3.21
+2,0.07,6.12,13.89,3.45
+...
 ```
-
-#### Verbose Output
-
-For detailed test output:
-
-```bash
-# Using task runner
-uv run poe test-verbose
-
-# Or using pytest directly
-uv run pytest -vv
-```
-
-#### Coverage Reporting
-
-Run tests with coverage analysis:
-
-```bash
-# Using task runner (recommended)
-uv run poe test-coverage
-
-# Or using pytest directly
-uv run pytest --cov=video_scene_splitter --cov-report=term-missing --cov-report=html
-```
-
-This generates:
-
-- Terminal output showing coverage percentages and missing lines
-- HTML coverage report in `htmlcov/index.html` (open in browser for detailed view)
-
-#### Parallel Test Execution
-
-Run tests in parallel for faster execution:
-
-```bash
-# Using task runner (recommended)
-uv run poe test-parallel
-
-# Or using pytest directly
-uv run pytest -n auto
-```
-
-This automatically detects the number of CPU cores and runs tests in parallel.
-
-### Test Categories
-
-Tests are organized with markers for selective execution:
-
-```bash
-# Run only unit tests
-pytest -m unit
-
-# Run only integration tests
-pytest -m integration
-
-# Skip slow tests
-pytest -m "not slow"
-
-# Run specific test file
-pytest tests/test_detection.py
-
-# Run specific test class
-pytest tests/test_detection.py::TestComputeHistogramDistance
-
-# Run specific test
-pytest tests/test_detection.py::TestComputeHistogramDistance::test_identical_frames_return_zero_distance
-```
-
-### Available Test Markers
-
-| Marker | Description |
-|--------|-------------|
-| `unit` | Unit tests for individual functions |
-| `integration` | Integration tests for complete workflows |
-| `slow` | Tests that take significant time to run |
-
-### Test Structure
-
-```
-tests/
-├── conftest.py              # Shared fixtures and test configuration
-├── test_detection.py        # Tests for scene detection algorithms
-├── test_splitter.py         # Tests for VideoSceneSplitter class
-├── test_utils.py            # Tests for utility functions
-└── test_video_processor.py  # Tests for video processing operations
-```
-
-### Prerequisites for Testing
-
-To run tests, you need to install development dependencies:
-
-```bash
-# Using uv (recommended)
-uv sync --all-extras
-
-# Or using pip
-pip install -e ".[dev]"
-```
-
-This installs:
-
-- pytest: Test framework
-- pytest-cov: Coverage reporting
-- pytest-xdist: Parallel test execution
-- pytest-mock: Mocking utilities
-
-### Continuous Integration
-
-All tests are automatically run on:
-
-- Every pull request
-- Every commit to the main branch
-- Before releases
-
-Pull requests must pass all tests and maintain the current coverage level before merging.
 
 ## ⚙️ Configuration Options
 
@@ -381,35 +312,6 @@ Splits the video into separate files at detected scene boundaries.
 - Uses FFmpeg for frame-accurate cutting
 - Re-encodes video with H.264 codec for precision
 - Preserves audio with AAC encoding
-
-## 📁 Output Files
-
-After running the script, you'll find the following in your output directory:
-
-### Video Files
-
-- `{original_name}_scene_001.mp4` - First scene
-- `{original_name}_scene_002.mp4` - Second scene
-- `{original_name}_scene_NNN.mp4` - Nth scene
-
-### Timestamp File
-
-- `timestamps.txt` - List of all scene start times with metadata
-
-### Debug Files (when debug=True)
-
-- `cut_001_before_fXXXX.jpg` - Frame before first cut
-- `cut_001_after_fXXXX.jpg` - Frame after first cut
-- `cut_detection_metrics.csv` - Detailed frame-by-frame analysis data
-
-### Metrics CSV Format
-
-```csv
-Frame,Timestamp,Hist_Distance,Pixel_Diff,Changed_Ratio%
-1,0.03,5.23,12.45,3.21
-2,0.07,6.12,13.89,3.45
-...
-```
 
 ## 🔧 Troubleshooting
 

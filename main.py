@@ -20,8 +20,8 @@ def main():
     Configuration:
         - video_path: Path to input video (modify this for your video)
         - output_dir: Directory for output files
-        - threshold: Detection sensitivity (20.0 = balanced)
-        - min_scene_duration: Minimum scene length (0.5s)
+        - threshold: Detection sensitivity (30.0 = default)
+        - min_scene_duration: Minimum scene length (1.5s = default)
         - debug: Enabled for detailed analysis and statistics
 
     Workflow:
@@ -36,10 +36,10 @@ def main():
         the optimal threshold for your specific video content.
     """
     # Configuration
-    video_path = "input/06-nhung-em-be-bot.mp4"  # Change this to your video
+    video_path = "input/sample_video.mp4"  # Change this to your video
     output_dir = "output"
-    threshold = 20.0  # Typical: 15-25 for hard cuts
-    min_scene_duration = 0.5  # Adjust based on your actual scene lengths
+    threshold = 30.0  # Default: 30.0 (typical range: 15-40)
+    min_scene_duration = 1.5  # Default: 1.5 seconds
     debug = False  # Set to True for detailed analysis and debug images
 
     # Initialize the video scene splitter
