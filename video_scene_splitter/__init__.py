@@ -8,5 +8,5 @@ analysis to identify hard cuts (abrupt scene changes) in video content.
 
 from .splitter import VideoSceneSplitter
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["VideoSceneSplitter"]

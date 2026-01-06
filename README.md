@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
-[![Package Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/Ayden51/video-scene-splitter)
+[![Package Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://github.com/Ayden51/video-scene-splitter)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://docs.astral.sh/uv/)
 
 A video processing tool that automatically detects and splits videos at hard cuts using computer vision techniques. It analyzes video content frame-by-frame to identify hard cuts—moments where the visual content changes abruptly, such as transitions between different camera angles, locations, or subjects—and splits the original video into separate files for each detected scene.

@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-01-06
+
+This patch release improves documentation, fixes configuration defaults, and enhances the user experience for new users.
+
+### Changed
+
+#### Documentation Improvements
+
+- **Restructured README.md Usage section** for better clarity and user-friendliness
+  - Added **Basic Setup** subsection with step-by-step instructions to create `input/` folder and place video files
+  - Added **Configuration** subsection explaining how to edit `main.py` to specify video path
+  - Split **Execution** section into two clear subsections:
+    - **With Scripts**: Using task runner (`uv run poe start`)
+    - **Without Scripts**: Direct Python execution (`python main.py`)
+  - Added **Output** subsection clearly stating that results are saved in `output/` folder
+  - Updated **Programmatic Usage** examples to use correct default values (threshold=30.0, min_scene_duration=1.5)
+  - Kept **Advanced Usage** examples for fine-tuned detection scenarios
+
+- **Reorganized README.md section order** for improved information flow
+  - New order: Features → Requirements → Installation → Usage → Output Files → Configuration Options → Troubleshooting → How It Works → License → Contributing → Support
+  - Moved **Output Files** section before **Configuration Options** for better logical flow
+  - Removed **Testing** section from README.md (comprehensive testing documentation remains in CONTRIBUTING.md)
+
+#### Configuration Fixes
+
+- **Fixed main.py default configuration** to match VideoSceneSplitter class defaults
+  - Changed `video_path` from specific file `"input/06-nhung-em-be-bot.mp4"` to generic `"input/sample_video.mp4"`
+  - Reset `threshold` from `20.0` to default value `30.0`
+  - Reset `min_scene_duration` from `0.5` to default value `1.5` seconds
+  - Updated docstring comments to reflect default values
+
+### Added
+
+- **Added `.augment/` to .gitignore** to exclude Augment-specific files from version control
+
+### Notes
+
+- This release focuses on improving the user experience for new users by providing clearer documentation and correct default configurations
+- All changes are non-breaking and backward compatible
+- Testing documentation has been consolidated in CONTRIBUTING.md for better organization
+- Default values in `main.py` now correctly match the VideoSceneSplitter class constructor defaults
+
 ## [0.1.0] - 2026-01-06
 
 Initial release of Video Scene Splitter - an intelligent video processing tool that automatically detects and splits videos at hard cuts using computer vision techniques.
@@ -161,4 +203,5 @@ Initial release of Video Scene Splitter - an intelligent video processing tool t
 - Development scripts will remain in `[tool.poe.tasks]` for consistency
 - All pull requests must pass the full test suite and maintain 95%+ code coverage
 
+[0.1.1]: https://github.com/Ayden51/video-scene-splitter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Ayden51/video-scene-splitter/releases/tag/v0.1.0
