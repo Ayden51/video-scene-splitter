@@ -1,0 +1,177 @@
+[project]
+name = "video-scene-splitter"
+version = "0.1.0"
+description = "A video processing tool that automatically detects and splits videos at hard cuts using computer vision techniques"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.0",
+    "opencv-python>=4.11.0.86",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "pre-commit>=4.0.0",
+    "poethepoet>=0.31.1",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.6.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.ruff]
+# Set the maximum line length to 100 characters (matching project style guide)
+line-length = 100
+# Target Python 3.14+
+target-version = "py314"
+# Exclude common directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "*.pyc",
+    ".pytest_cache",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Enable the following rule sets:
+# E/W: pycodestyle errors and warnings
+# F: Pyflakes
+# I: isort (import sorting)
+# N: pep8-naming
+# UP: pyupgrade (modernize Python code)
+# B: flake8-bugbear (find likely bugs)
+# C4: flake8-comprehensions (better list/dict/set comprehensions)
+# SIM: flake8-simplify (simplify code)
+# RUF: Ruff-specific rules
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+# Ignore specific rules if needed
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Allow unused imports in __init__.py files
+"__init__.py" = ["F401"]
+
+[tool.ruff.format]
+# Use double quotes for strings (Black-compatible)
+quote-style = "double"
+# Use spaces for indentation
+indent-style = "space"
+# Respect magic trailing commas
+skip-magic-trailing-comma = false
+# Auto-detect line endings
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+# Organize imports with known first-party modules
+known-first-party = ["video_scene_splitter"]
+
+[tool.poe.tasks]
+# Development scripts for code quality and formatting
+# These will remain in [tool.poe.tasks] even when CLI is implemented in [project.scripts]
+lint = "ruff check ."
+format = "ruff format ."
+lint-fix = "ruff check --fix ."
+
+# Testing scripts
+test = "pytest"
+test-verbose = "pytest -vv"
+test-coverage = "pytest --cov=video_scene_splitter --cov-report=term-missing --cov-report=html"
+test-watch = "pytest --watch"
+test-parallel = "pytest -n auto"
+
+# Application scripts
+# Note: When implementing a proper CLI, add entry points to [project.scripts]
+# and optionally keep these as convenience wrappers or remove them
+start = "python main.py"
+
+# Composite task to run both lint and format check
+[tool.poe.tasks.check]
+sequence = ["lint", "format --check ."]
+help = "Run all code quality checks (lint + format check)"
+
+# Composite task to run all checks including tests
+[tool.poe.tasks.check-all]
+sequence = ["lint", "format --check .", "test"]
+help = "Run all code quality checks and tests"
+
+# ============================================================================
+# Pytest Configuration
+# ============================================================================
+# Configuration for the pytest test framework
+# Run tests with: pytest or uv run poe test
+# See CONTRIBUTING.md for detailed testing guidelines
+
+[tool.pytest.ini_options]
+# Minimum pytest version required
+minversion = "8.3"
+
+# Test Discovery Patterns
+# Pytest will automatically discover and run tests matching these patterns
+testpaths = ["tests"]                    # Directory containing test files
+python_files = ["test_*.py", "*_test.py"] # Test file naming patterns
+python_classes = ["Test*"]                # Test class naming pattern
+python_functions = ["test_*"]             # Test function naming pattern
+
+# Default Command-Line Options
+# These options are applied automatically when running pytest
+addopts = [
+    "-ra",                    # Show summary of all test outcomes (passed, failed, skipped, etc.)
+    "--strict-markers",       # Raise error on unknown markers (prevents typos in marker names)
+    "--strict-config",        # Raise error on configuration issues
+    "--showlocals",           # Show local variables in tracebacks for easier debugging
+    "-v",                     # Verbose output showing individual test names
+]
+
+# Test Markers
+# Use markers to categorize and selectively run tests
+# Examples:
+#   pytest -m unit              # Run only unit tests
+#   pytest -m integration       # Run only integration tests
+#   pytest -m "not slow"        # Skip slow tests
+markers = [
+    "unit: Unit tests for individual functions and methods",
+    "integration: Integration tests for complete workflows and component interaction",
+    "slow: Tests that take significant time to run (e.g., processing large files)",
+]
+
+# ============================================================================
+# Coverage Configuration
+# ============================================================================
+# Configuration for pytest-cov coverage reporting
+# Run with: pytest --cov=video_scene_splitter --cov-report=term-missing
+
+[tool.coverage.run]
+# Source code to measure coverage for
+source = ["video_scene_splitter"]
+
+# Files and directories to exclude from coverage measurement
+omit = [
+    "*/tests/*",              # Test files themselves
+    "*/__pycache__/*",        # Python bytecode cache
+    "*/venv/*",               # Virtual environment (venv)
+    "*/.venv/*",              # Virtual environment (.venv)
+]
+
+[tool.coverage.report]
+# Coverage report formatting options
+precision = 2                 # Decimal places for coverage percentages (e.g., 99.42%)
+show_missing = true           # Show line numbers of missing coverage
+skip_covered = false          # Include fully covered files in report
+
+# Lines to exclude from coverage measurement
+# These patterns are typically for code that doesn't need testing
+exclude_lines = [
+    "pragma: no cover",                # Explicit coverage exclusion marker
+    "def __repr__",                    # String representation methods
+    "raise AssertionError",            # Assertion failures (defensive programming)
+    "raise NotImplementedError",       # Abstract method placeholders
+    "if __name__ == .__main__.:",      # Script entry points
+    "if TYPE_CHECKING:",               # Type checking imports (runtime vs. static analysis)
+]
+

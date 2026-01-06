@@ -1,0 +1,16 @@
+# Video Scene Splitter - Python Dependencies
+# 
+# RECOMMENDED: Use uv for faster and more reliable dependency management
+#   pip install uv
+#   uv sync
+#
+# ALTERNATIVE: Use pip for traditional installation
+#   pip install -r requirements.txt
+#
+
+# Computer Vision
+opencv-python>=4.11.0.86
+
+# Numerical Computing
+numpy>=2.4.0
+
