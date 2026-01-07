@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Enhanced debug mode with detailed GPU hardware information**
+  - Debug mode (`debug=True`) now displays comprehensive GPU hardware details including:
+    - GPU name, memory (total and free), CUDA version, driver version
+    - Compute capability and backend information
+    - Processor mode and acceleration status
+  - Normal mode (`debug=False`) shows brief, user-friendly status messages
+  - Helps users verify GPU detection and troubleshoot hardware acceleration issues
+  - Updated `print_gpu_status()` function to accept `debug` parameter for conditional output
+
 ## [0.1.1] - 2026-01-06
 
 This patch release improves documentation, fixes configuration defaults, and enhances the user experience for new users.

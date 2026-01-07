@@ -8,6 +8,44 @@ all test modules.
 import numpy as np
 import pytest
 
+# =============================================================================
+# GPU Test Support
+# =============================================================================
+
+
+def _gpu_available() -> bool:
+    """Check if CUDA GPU is available for testing."""
+    try:
+        import cupy as cp
+
+        _ = cp.cuda.Device(0).compute_capability
+        return True
+    except Exception:
+        return False
+
+
+@pytest.fixture(scope="session")
+def gpu_available():
+    """Session-scoped fixture indicating GPU availability."""
+    return _gpu_available()
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "gpu: Tests requiring CUDA GPU")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip GPU tests when GPU is not available."""
+    del config  # Unused but required by pytest hook signature
+    if _gpu_available():
+        return  # GPU available, don't skip anything
+
+    skip_gpu = pytest.mark.skip(reason="CUDA GPU not available")
+    for item in items:
+        if "gpu" in item.keywords:
+            item.add_marker(skip_gpu)
+
 
 @pytest.fixture
 def black_frame():

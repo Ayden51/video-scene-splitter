@@ -10,6 +10,13 @@ from pathlib import Path
 import cv2
 
 from .detection import compute_histogram_distance, compute_pixel_difference, is_hard_cut
+from .gpu_utils import (
+    GPUInfo,
+    ProcessorType,
+    detect_cuda_gpu,
+    print_gpu_status,
+    select_processor,
+)
 from .utils import save_debug_frames, save_metrics_to_csv, save_timestamps_to_file
 from .video_processor import split_video_at_timestamps
 
@@ -39,7 +46,14 @@ class VideoSceneSplitter:
         >>> splitter.split_video()
     """
 
-    def __init__(self, video_path, output_dir="output", threshold=30.0, min_scene_duration=1.5):
+    def __init__(
+        self,
+        video_path,
+        output_dir="output",
+        threshold=30.0,
+        min_scene_duration=1.5,
+        processor="auto",
+    ):
         """
         Initialize the video scene splitter for hard cut detection.
 
@@ -57,9 +71,15 @@ class VideoSceneSplitter:
             min_scene_duration (float, optional): Minimum scene duration in seconds.
                 Defaults to 1.5. Prevents detection of very short scenes.
                 Useful for filtering out brief flashes or transitions.
+            processor (str, optional): Processing mode for scene detection.
+                Defaults to "auto". Options:
+                - "auto": Automatically detect and use GPU if available, fallback to CPU
+                - "cpu": Force CPU-only processing (useful for debugging or compatibility)
+                - "gpu": Force GPU processing (raises error if GPU unavailable)
 
         Raises:
             ValueError: If video_path doesn't exist or threshold is negative.
+            RuntimeError: If processor="gpu" but no GPU is available.
 
         Note:
             The threshold operates on a 0-100 scale where higher values indicate
@@ -71,6 +91,13 @@ class VideoSceneSplitter:
         self.threshold = threshold
         self.min_scene_duration = min_scene_duration
         self.scene_timestamps = []
+
+        # GPU detection and processor selection
+        self._gpu_info: GPUInfo = detect_cuda_gpu()
+        self._processor_request = ProcessorType.from_string(processor)
+        self._active_processor: ProcessorType = select_processor(
+            self._processor_request, self._gpu_info
+        )
 
     def detect_scenes(self, debug=False):
         """
@@ -97,6 +124,7 @@ class VideoSceneSplitter:
         Args:
             debug (bool, optional): Enable debug mode for detailed analysis.
                 Defaults to False. When True:
+                - Displays detailed GPU hardware information and acceleration status
                 - Saves before/after frames at each detected cut as JPEG images
                 - Generates CSV file with frame-by-frame metrics
                 - Prints statistical analysis (min, max, mean, std dev)
@@ -127,6 +155,9 @@ class VideoSceneSplitter:
         """
         print(f"Analyzing video: {self.video_path}")
         Path(self.output_dir).mkdir(exist_ok=True)
+
+        # Print GPU/processor status (detailed in debug mode, brief otherwise)
+        print_gpu_status(self._gpu_info, self._active_processor, debug=debug)
 
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
