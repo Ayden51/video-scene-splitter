@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pytest
 
+from video_scene_splitter.gpu_utils import GPUInfo, ProcessorType
 from video_scene_splitter.splitter import VideoSceneSplitter
 
 
@@ -45,6 +46,67 @@ class TestVideoSceneSplitterInit:
         splitter = VideoSceneSplitter("test.mp4")
         assert splitter.scene_timestamps == []
         assert isinstance(splitter.scene_timestamps, list)
+
+
+class TestVideoSceneSplitterProcessor:
+    """Tests for processor parameter and GPU detection integration."""
+
+    def test_default_processor_is_auto(self):
+        """Default processor should be AUTO."""
+        splitter = VideoSceneSplitter("test.mp4")
+        assert splitter._processor_request == ProcessorType.AUTO
+
+    def test_processor_cpu_explicit(self):
+        """Should accept 'cpu' processor parameter."""
+        splitter = VideoSceneSplitter("test.mp4", processor="cpu")
+        assert splitter._processor_request == ProcessorType.CPU
+        assert splitter._active_processor == ProcessorType.CPU
+
+    def test_processor_auto_string(self):
+        """Should accept 'auto' processor parameter."""
+        splitter = VideoSceneSplitter("test.mp4", processor="auto")
+        assert splitter._processor_request == ProcessorType.AUTO
+
+    def test_gpu_info_is_detected(self):
+        """Should detect GPU info during initialization."""
+        splitter = VideoSceneSplitter("test.mp4")
+        assert isinstance(splitter._gpu_info, GPUInfo)
+
+    def test_active_processor_is_set(self):
+        """Should set active processor based on GPU availability."""
+        splitter = VideoSceneSplitter("test.mp4")
+        assert splitter._active_processor in [ProcessorType.CPU, ProcessorType.GPU]
+
+    def test_cpu_processor_always_uses_cpu(self):
+        """CPU processor should always result in CPU active processor."""
+        splitter = VideoSceneSplitter("test.mp4", processor="cpu")
+        assert splitter._active_processor == ProcessorType.CPU
+
+    @patch("video_scene_splitter.splitter.detect_cuda_gpu")
+    def test_auto_uses_gpu_when_available(self, mock_detect):
+        """AUTO should use GPU when available."""
+        mock_detect.return_value = GPUInfo(available=True, name="Test GPU")
+
+        splitter = VideoSceneSplitter("test.mp4", processor="auto")
+
+        assert splitter._active_processor == ProcessorType.GPU
+
+    @patch("video_scene_splitter.splitter.detect_cuda_gpu")
+    def test_auto_falls_back_to_cpu(self, mock_detect):
+        """AUTO should fallback to CPU when GPU unavailable."""
+        mock_detect.return_value = GPUInfo(available=False)
+
+        splitter = VideoSceneSplitter("test.mp4", processor="auto")
+
+        assert splitter._active_processor == ProcessorType.CPU
+
+    @patch("video_scene_splitter.splitter.detect_cuda_gpu")
+    def test_gpu_processor_raises_when_unavailable(self, mock_detect):
+        """GPU processor should raise error when GPU unavailable."""
+        mock_detect.return_value = GPUInfo(available=False)
+
+        with pytest.raises(RuntimeError, match="GPU processing requested"):
+            VideoSceneSplitter("test.mp4", processor="gpu")
 
 
 class TestVideoSceneSplitterDetectScenes:
