@@ -8,16 +8,29 @@ analysis to identify hard cuts (abrupt scene changes) in video content.
 GPU acceleration is supported via NVIDIA CUDA when CuPy is installed.
 """
 
-from .gpu_utils import GPUConfig, GPUInfo, ProcessorType, detect_cuda_gpu
+from .gpu_utils import (
+    AutoModeConfig,
+    GPUConfig,
+    GPUInfo,
+    ProcessorType,
+    detect_cuda_gpu,
+    estimate_optimal_batch_size,
+    get_resolution_batch_size_cap,
+    select_operation_processor,
+)
 from .splitter import VideoSceneSplitter
 
 __version__ = "0.2.0-dev"
 __all__ = [
+    "AutoModeConfig",
     "GPUConfig",
     "GPUInfo",
     "ProcessorType",
     "VideoSceneSplitter",
     "detect_cuda_gpu",
+    "estimate_optimal_batch_size",
+    "get_resolution_batch_size_cap",
+    "select_operation_processor",
 ]
 
 # GPU detection functions are available via detection_gpu module
