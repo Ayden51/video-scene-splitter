@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hybrid CPU/GPU processing (Phase 2B) - AUTO mode**
+  - `AutoModeConfig` dataclass for configuring hybrid processing behavior
+    - `min_resolution_for_gpu`: Minimum resolution to use GPU (default: 720p)
+    - `use_gpu_for_pixel_diff`: GPU for pixel diff on HD+ (default: True)
+    - `use_gpu_for_histogram`: CPU for histogram (default: False - 1.35x faster)
+    - Resolution-based batch size caps (SD=60, HD=30, 4K=15 frames)
+  - `select_operation_processor()`: Per-operation processor selection function
+    - Returns CPU for histogram computation (always - benchmarked 1.35x faster)
+    - Returns GPU for pixel diff on HD+ content (≥720p - benchmarked 1.29x faster)
+    - Returns CPU for SD content (transfer overhead too high)
+  - `get_resolution_batch_size_cap()`: Resolution-aware batch size selection
+  - `_detect_scenes_hybrid()`: New hybrid detection pipeline in VideoSceneSplitter
+    - Automatically selects optimal processor per operation based on resolution
+    - GPU pixel diff + CPU histogram for HD+ content
+    - Full CPU processing for SD content (optimal for small frames)
+    - GPU OOM error handling with automatic CPU fallback
+  - `compute_pixel_difference_batch_cpu()`: CPU batch pixel difference for hybrid mode
+  - `compute_histogram_distance_batch_cpu()`: CPU batch histogram for hybrid mode
+  - Updated routing logic in `detect_scenes()` to dispatch to hybrid mode for AUTO
+
 - **GPU-accelerated scene detection algorithms (Phase 2A)**
   - `compute_pixel_difference_gpu()`: Single frame pair pixel difference on GPU
   - `compute_histogram_distance_gpu()`: Single frame pair histogram distance on GPU
@@ -55,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Technical Notes
 
+- **Hybrid processing strategy** (AUTO mode):
+  - Histogram: Always CPU (1.35x faster than GPU due to transfer overhead)
+  - Pixel diff: GPU for HD+ (≥720p), CPU for SD (transfer overhead dominates)
+  - This strategy provides optimal performance across all video resolutions
 - GPU detection algorithms require CuPy with CUDA 13.0+
 - Histogram counting still requires loop (scatter operation limitation)
 - Full histogram parallelization requires custom CUDA kernels (planned for v0.3.0+)

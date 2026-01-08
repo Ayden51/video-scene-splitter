@@ -14,6 +14,7 @@ from video_scene_splitter.gpu_utils import (
     GPUInfo,
     ProcessorType,
     detect_cuda_gpu,
+    estimate_optimal_batch_size,
     get_available_backends,
     get_backend,
     print_gpu_status,
@@ -368,6 +369,85 @@ class TestCuPyBackend:
 
         mock_cp.asnumpy.assert_called_once_with(mock_gpu_array)
         assert result is expected_array
+
+
+class TestEstimateOptimalBatchSize:
+    """Tests for estimate_optimal_batch_size function."""
+
+    def test_returns_integer(self):
+        """estimate_optimal_batch_size should return an integer."""
+        result = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=8192
+        )
+        assert isinstance(result, int)
+
+    def test_minimum_batch_size_is_5(self):
+        """Batch size should never be less than 5."""
+        # Very low memory should still return at least 5
+        result = estimate_optimal_batch_size(
+            frame_height=2160,
+            frame_width=3840,
+            available_memory_mb=1,  # Unrealistically low
+        )
+        assert result >= 5
+
+    def test_maximum_batch_size_is_120(self):
+        """Batch size should never exceed 120."""
+        # Very high memory should still cap at 120
+        result = estimate_optimal_batch_size(
+            frame_height=100,
+            frame_width=100,
+            available_memory_mb=1000000,  # Unrealistically high
+        )
+        assert result <= 120
+
+    def test_larger_frames_reduce_batch_size(self):
+        """Larger frames should result in smaller batch sizes."""
+        result_sd = estimate_optimal_batch_size(
+            frame_height=480, frame_width=640, available_memory_mb=8192
+        )
+        result_4k = estimate_optimal_batch_size(
+            frame_height=2160, frame_width=3840, available_memory_mb=8192
+        )
+        # 4K frames are much larger, so batch size should be smaller
+        assert result_4k < result_sd
+
+    def test_more_memory_increases_batch_size(self):
+        """More GPU memory should allow larger batch sizes."""
+        result_4gb = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=4096
+        )
+        result_16gb = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=16384
+        )
+        # More memory should allow larger batches
+        assert result_16gb >= result_4gb
+
+    def test_safety_factor_reduces_effective_memory(self):
+        """Safety factor should reduce effective memory available."""
+        result_high_safety = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=8192, safety_factor=0.3
+        )
+        result_low_safety = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=8192, safety_factor=0.9
+        )
+        # Lower safety factor means more usable memory, larger batch
+        assert result_low_safety >= result_high_safety
+
+    def test_typical_hd_video_with_8gb(self):
+        """Typical HD video with 8GB VRAM should return reasonable batch size."""
+        result = estimate_optimal_batch_size(
+            frame_height=1080, frame_width=1920, available_memory_mb=8192
+        )
+        # Should be in a reasonable range for 8GB GPU
+        assert 15 <= result <= 120
+
+    def test_zero_dimensions_returns_default(self):
+        """Zero dimensions should return default batch size (30)."""
+        result = estimate_optimal_batch_size(
+            frame_height=0, frame_width=0, available_memory_mb=8192
+        )
+        assert result == 30
 
 
 class TestSelectProcessor:

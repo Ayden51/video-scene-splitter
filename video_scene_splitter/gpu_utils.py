@@ -386,6 +386,163 @@ def select_processor(requested: ProcessorType, gpu_info: GPUInfo | None = None) 
     return ProcessorType.CPU
 
 
+def estimate_optimal_batch_size(
+    frame_height: int,
+    frame_width: int,
+    available_memory_mb: int,
+    safety_factor: float = 0.7,
+) -> int:
+    """
+    Calculate optimal batch size based on GPU memory and frame dimensions.
+
+    Memory per frame estimate:
+    - BGR frame: H * W * 3 bytes
+    - Grayscale: H * W bytes (for pixel difference)
+    - HSV: H * W * 3 bytes (for histogram)
+    - Histograms: ~170 bins * 4 bytes * 3 channels = ~2KB
+    - Working memory: ~2x frame size for intermediate results
+
+    Total per frame: ~2.5 * (H * W * 3) bytes
+
+    Args:
+        frame_height: Height of video frames in pixels.
+        frame_width: Width of video frames in pixels.
+        available_memory_mb: Available GPU memory in megabytes.
+        safety_factor: Fraction of available memory to use (0.0-1.0).
+            Default is 0.7 to leave headroom for CuPy overhead.
+
+    Returns:
+        int: Recommended batch size (clamped to 5-120 range).
+    """
+    # Memory per frame (all intermediate buffers)
+    # BGR frame + grayscale + HSV + working buffers
+    bytes_per_frame = int(2.5 * frame_height * frame_width * 3)
+
+    # Available bytes with safety factor
+    available_bytes = available_memory_mb * 1024 * 1024 * safety_factor
+
+    # Calculate optimal batch
+    optimal_batch = int(available_bytes / bytes_per_frame) if bytes_per_frame > 0 else 30
+
+    # Clamp to reasonable range (5-120 frames)
+    return max(5, min(optimal_batch, 120))
+
+
+@dataclass
+class AutoModeConfig:
+    """Configuration for AUTO mode hybrid processing.
+
+    AUTO mode optimizes performance by using the best processor for each operation:
+    - GPU for pixel difference on HD+ content (≥720p) where GPU is 1.29x faster
+    - CPU for histogram computation (always, as CPU is 1.35x faster than GPU)
+    - CPU for SD content (transfer overhead makes GPU slower)
+
+    Attributes:
+        min_resolution_for_gpu: Minimum vertical resolution for GPU processing.
+            Content below this uses CPU only. Default: 720 (HD).
+        max_resolution_for_gpu: Maximum vertical resolution for GPU processing.
+            Content above this may need smaller batch sizes. Default: 4096.
+        use_gpu_for_pixel_diff: Whether to use GPU for pixel difference on HD+.
+            Default: True (GPU is 1.29x faster for HD content).
+        use_gpu_for_histogram: Whether to use GPU for histogram computation.
+            Default: False (CPU is 1.35x faster due to transfer overhead).
+        max_batch_size_sd: Maximum batch size for SD content (<720p).
+        max_batch_size_hd: Maximum batch size for HD content (720p-1080p).
+        max_batch_size_4k: Maximum batch size for 4K content (≥2160p).
+        memory_fraction: Conservative memory usage fraction. Default: 0.7.
+    """
+
+    min_resolution_for_gpu: int = 720  # HD threshold
+    max_resolution_for_gpu: int = 4096  # 4K max
+    use_gpu_for_pixel_diff: bool = True  # GPU 1.29x faster for HD+
+    use_gpu_for_histogram: bool = False  # CPU 1.35x faster (transfer overhead)
+    max_batch_size_sd: int = 60  # SD: minimal GPU benefit
+    max_batch_size_hd: int = 30  # HD: balanced
+    max_batch_size_4k: int = 15  # 4K: memory constrained
+    memory_fraction: float = 0.7  # Conservative memory usage
+
+
+def get_resolution_batch_size_cap(
+    frame_height: int,
+    config: AutoModeConfig | None = None,
+) -> int:
+    """Get the maximum batch size based on video resolution.
+
+    Higher resolution content requires smaller batches to avoid OOM errors.
+
+    Args:
+        frame_height: Height of video frames in pixels.
+        config: Optional AutoModeConfig with custom batch caps.
+
+    Returns:
+        Maximum recommended batch size for the resolution.
+    """
+    if config is None:
+        config = AutoModeConfig()
+
+    if frame_height >= 2160:  # 4K
+        return config.max_batch_size_4k
+    elif frame_height >= 720:  # HD
+        return config.max_batch_size_hd
+    else:  # SD
+        return config.max_batch_size_sd
+
+
+def select_operation_processor(
+    operation: str,
+    frame_height: int,
+    frame_width: int,
+    gpu_info: GPUInfo,
+    config: AutoModeConfig | None = None,
+) -> ProcessorType:
+    """Select the optimal processor for a specific operation in AUTO mode.
+
+    Based on Phase 2A benchmark results:
+    - GPU pixel diff: 1.29x faster than CPU for HD content
+    - CPU histogram: 1.35x faster than GPU (transfer overhead)
+
+    Args:
+        operation: Operation type ("pixel_diff" or "histogram").
+        frame_height: Height of video frames in pixels.
+        frame_width: Width of video frames in pixels (for future use).
+        gpu_info: GPU detection information.
+        config: Optional AutoModeConfig for customization.
+
+    Returns:
+        ProcessorType.GPU or ProcessorType.CPU based on optimal selection.
+    """
+    # frame_width is available for future resolution-based decisions
+    _ = frame_width  # Suppress unused warning
+
+    if config is None:
+        config = AutoModeConfig()
+
+    # No GPU available - always CPU
+    if not gpu_info.available:
+        return ProcessorType.CPU
+
+    # Histogram: always CPU (1.35x faster due to transfer overhead)
+    if operation == "histogram":
+        if config.use_gpu_for_histogram:
+            return ProcessorType.GPU
+        return ProcessorType.CPU
+
+    # Pixel difference: GPU for HD+ content only
+    if operation == "pixel_diff":
+        if not config.use_gpu_for_pixel_diff:
+            return ProcessorType.CPU
+
+        # SD content: CPU (transfer overhead dominates)
+        if frame_height < config.min_resolution_for_gpu:
+            return ProcessorType.CPU
+
+        # HD+ content: GPU (1.29x faster)
+        return ProcessorType.GPU
+
+    # Unknown operation - default to CPU
+    return ProcessorType.CPU
+
+
 def print_gpu_status(
     gpu_info: GPUInfo, selected_processor: ProcessorType, debug: bool = False
 ) -> None:
