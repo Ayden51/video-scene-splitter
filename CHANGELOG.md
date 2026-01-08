@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GPU-accelerated scene detection algorithms (Phase 2A)**
+  - `compute_pixel_difference_gpu()`: Single frame pair pixel difference on GPU
+  - `compute_histogram_distance_gpu()`: Single frame pair histogram distance on GPU
+  - `compute_pixel_difference_batch_gpu()`: Batch processing for pixel difference (5-120 frames)
+  - `compute_histogram_distance_batch_gpu()`: Batch processing for histogram distance
+  - `histogram_correlation_batch_gpu()`: Vectorized batch correlation without Python loops
+  - `bgr_to_gray_gpu()` and `bgr_to_hsv_gpu()`: Color space conversion helpers
+  - `free_gpu_memory()`: Explicit GPU memory cleanup function
+
 - **Enhanced debug mode with detailed GPU hardware information**
   - Debug mode (`debug=True`) now displays comprehensive GPU hardware details including:
     - GPU name, memory (total and free), CUDA version, driver version
@@ -17,6 +26,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Normal mode (`debug=False`) shows brief, user-friendly status messages
   - Helps users verify GPU detection and troubleshoot hardware acceleration issues
   - Updated `print_gpu_status()` function to accept `debug` parameter for conditional output
+
+- **GPU benchmarking infrastructure**
+  - `benchmarks/gpu_benchmark.py`: Comprehensive GPU vs CPU performance testing
+  - Support for SD, HD, and 4K video benchmarking
+  - Batch size variation testing (5, 15, 30, 60 frames)
+  - Results documentation in `benchmarks/results/`
+
+- **45 new GPU detection tests** in `tests/test_detection_gpu.py`
+  - Single frame pair GPU tests for pixel difference and histogram distance
+  - Batch processing tests with various sizes (2, 5, 10, 15, 30, 61 frames)
+  - GPU vs CPU result consistency tests (tolerance: pixel 1e-5, histogram rel=0.3)
+  - GPU memory management tests
+  - Color space conversion tests (BGR to Gray, BGR to HSV)
+
+### Changed
+
+- **Improved GPU histogram performance** from 0.32x to 0.77x of CPU speed
+  - Vectorized batch histogram correlation (removed per-pair Python loops)
+  - Added explicit memory cleanup with `del` statements
+  - GPU histogram now competitive at 0.7-0.8x of CPU (was 0.3x before)
+
+### Performance
+
+- **GPU Pixel Difference**: 1.19-1.43x speedup for HD video (1080p)
+- **GPU Histogram Distance**: 0.69-0.77x of CPU (improved from 0.32x)
+- **Overall**: GPU provides meaningful speedup for HD pixel difference; histogram is acceptable
+
+### Technical Notes
+
+- GPU detection algorithms require CuPy with CUDA 13.0+
+- Histogram counting still requires loop (scatter operation limitation)
+- Full histogram parallelization requires custom CUDA kernels (planned for v0.3.0+)
 
 ## [0.1.1] - 2026-01-06
 
