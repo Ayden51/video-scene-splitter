@@ -19,3 +19,27 @@ __all__ = [
     "VideoSceneSplitter",
     "detect_cuda_gpu",
 ]
+
+# GPU detection functions are available via detection_gpu module
+# Import them lazily to avoid CuPy import errors when GPU is not available
+try:
+    from .detection_gpu import (
+        compute_histogram_distance_batch_gpu,
+        compute_histogram_distance_gpu,
+        compute_pixel_difference_batch_gpu,
+        compute_pixel_difference_gpu,
+        free_gpu_memory,
+    )
+
+    __all__.extend(
+        [
+            "compute_histogram_distance_batch_gpu",
+            "compute_histogram_distance_gpu",
+            "compute_pixel_difference_batch_gpu",
+            "compute_pixel_difference_gpu",
+            "free_gpu_memory",
+        ]
+    )
+except ImportError:
+    # CuPy not available, GPU functions not exported
+    pass
