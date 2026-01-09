@@ -282,14 +282,19 @@ class TestVideoSceneSplitterSplitVideo:
 
     @patch("video_scene_splitter.splitter.split_video_at_timestamps")
     def test_calls_split_video_at_timestamps(self, mock_split):
-        """Should call the split_video_at_timestamps function."""
+        """Should call the split_video_at_timestamps function with processor mode."""
         mock_split.return_value = 3
 
         splitter = VideoSceneSplitter("test.mp4")
         splitter.scene_timestamps = [0.0, 5.0, 10.0]
         result = splitter.split_video()
 
-        mock_split.assert_called_once_with("test.mp4", [0.0, 5.0, 10.0], "output")
+        # Now includes processor mode (AUTO by default)
+        from video_scene_splitter.gpu_utils import ProcessorType
+
+        mock_split.assert_called_once_with(
+            "test.mp4", [0.0, 5.0, 10.0], "output", ProcessorType.AUTO
+        )
         assert result == 3
 
 

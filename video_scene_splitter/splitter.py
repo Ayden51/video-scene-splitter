@@ -25,9 +25,10 @@ from .gpu_utils import (
     print_gpu_status,
     select_operation_processor,
     select_processor,
+    should_use_async_io,
 )
 from .utils import save_debug_frames, save_metrics_to_csv, save_timestamps_to_file
-from .video_processor import split_video_at_timestamps
+from .video_processor import read_frames_async, split_video_at_timestamps
 
 
 class VideoSceneSplitter:
@@ -308,15 +309,20 @@ class VideoSceneSplitter:
 
     def _detect_scenes_hybrid(self, debug=False):
         """
-        Hybrid CPU/GPU scene detection with per-operation processor selection.
+        Hybrid CPU/GPU scene detection with per-operation processor selection and async I/O.
 
-        This method implements the Phase 2C hybrid processing strategy based on
-        benchmark results:
-        - Histogram computation: Always CPU (1.35x faster than GPU due to transfer overhead)
-        - Pixel difference: GPU for HD+ content (1.5-2x faster), CPU for SD content
+        This method implements performance-optimized processing based on actual benchmark
+        results (2026-01-09):
 
-        The processor selection is made per-operation based on video resolution,
-        optimizing for the best performance on each type of computation.
+        Scene Detection:
+        - SD (480p): GPU pixel diff (1.32x overall speedup)
+        - HD (1080p): GPU pixel diff (1.39x overall speedup, best benefit)
+        - 4K (2160p): CPU pixel diff (GPU 0.88x, slower due to transfer overhead)
+        - Histogram: Always CPU (1.1-1.7x faster than GPU)
+
+        Frame Reading:
+        - GPU mode: Async I/O (1.01-1.54x speedup when GPU time >= 10ms)
+        - CPU mode: Sync I/O (no async benefit, avoid overhead)
         """
         # Import GPU functions (lazy import to avoid errors when GPU unavailable)
         from .detection_gpu import (
@@ -335,34 +341,50 @@ class VideoSceneSplitter:
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+        # Classify resolution for logging
+        if frame_height >= 2160:
+            resolution_class = "4K"
+        elif frame_height >= 720:
+            resolution_class = "HD"
+        else:
+            resolution_class = "SD"
+
         print(f"Video: {fps:.2f} FPS, {total_frames} frames, {duration:.2f}s")
-        print(f"Resolution: {frame_width}x{frame_height}")
+        print(f"Resolution: {frame_width}x{frame_height} ({resolution_class})")
         print(f"Threshold: {self.threshold}")
         print(f"Min scene duration: {self.min_scene_duration}s ({min_frame_gap} frames)")
 
-        # Determine per-operation processor selection
+        # Determine per-operation processor selection with logging
         auto_config = AutoModeConfig()
+        print("\n🔧 AUTO mode decisions (benchmark-based):")
+
         hist_processor = select_operation_processor(
-            "histogram", frame_height, frame_width, self._gpu_info, auto_config
+            "histogram", frame_height, frame_width, self._gpu_info, auto_config, verbose=True
         )
         pixel_processor = select_operation_processor(
-            "pixel_diff", frame_height, frame_width, self._gpu_info, auto_config
+            "pixel_diff", frame_height, frame_width, self._gpu_info, auto_config, verbose=True
         )
 
+        # Determine async I/O usage
+        use_async = should_use_async_io(pixel_processor, self._gpu_info, auto_config, verbose=True)
+
         print(
-            f"\n🔧 Hybrid mode: Histogram={hist_processor.value}, PixelDiff={pixel_processor.value}"
+            f"\n🔧 Hybrid mode: Histogram={hist_processor.value.upper()}, "
+            f"PixelDiff={pixel_processor.value.upper()}"
         )
 
         # Determine batch size based on pixel processor
         if pixel_processor == ProcessorType.GPU:
             batch_size = self._determine_batch_size(frame_height, frame_width, debug)
             # Apply resolution-based cap
-            batch_size = min(batch_size, get_resolution_batch_size_cap(frame_height, frame_width))
+            batch_size = min(batch_size, get_resolution_batch_size_cap(frame_height, auto_config))
         else:
             # CPU batch size - smaller batches for memory efficiency
             batch_size = 30
 
         print(f"Batch size: {batch_size}")
+        io_mode = "async (I/O overlap)" if use_async else "sync (sequential)"
+        print(f"Frame reading: {io_mode}")
 
         # Read first frame
         ret, first_frame = cap.read()
@@ -375,40 +397,31 @@ class VideoSceneSplitter:
         all_metrics = []
 
         print("\n" + "=" * 70)
-        print("Detecting hard cuts (hybrid CPU/GPU)...")
+        mode_desc = "hybrid CPU/GPU" if pixel_processor == ProcessorType.GPU else "CPU"
+        io_desc = "async I/O" if use_async else "sync I/O"
+        print(f"Detecting hard cuts ({mode_desc} with {io_desc})...")
         print("=" * 70)
 
-        # Frame buffer for batch processing
+        # Frame buffer for batch processing - start with first frame
         frame_buffer = [first_frame]
         frame_indices = [0]
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                # Process remaining frames in buffer
-                if len(frame_buffer) > 1:
-                    last_scene_frame = self._process_hybrid_batch(
-                        frame_buffer,
-                        frame_indices,
-                        fps,
-                        min_frame_gap,
-                        last_scene_frame,
-                        all_metrics,
-                        debug,
-                        total_frames,
-                        hist_processor,
-                        pixel_processor,
-                        compute_pixel_difference_batch_gpu,
-                        free_gpu_memory,
-                    )
-                break
+        # Choose frame reading method based on async decision
+        if use_async:
+            frame_reader = read_frames_async(cap, batch_size=batch_size)
+        else:
+            frame_reader = self._read_frames_sync(cap, batch_size)
 
-            frame_buffer.append(frame)
-            frame_indices.append(frame_num)
-            frame_num += 1
+        # Process frames using selected I/O method
+        for batch in frame_reader:
+            # Add batch frames to buffer
+            for frame in batch:
+                frame_buffer.append(frame)
+                frame_indices.append(frame_num)
+                frame_num += 1
 
-            # Process batch when buffer is full
-            if len(frame_buffer) >= batch_size + 1:
+            # Process batch when buffer is full (batch_size + 1 for overlap)
+            while len(frame_buffer) >= batch_size + 1:
                 last_scene_frame = self._process_hybrid_batch(
                     frame_buffer,
                     frame_indices,
@@ -428,6 +441,23 @@ class VideoSceneSplitter:
                 frame_buffer = [frame_buffer[-1]]
                 frame_indices = [frame_indices[-1]]
 
+        # Process remaining frames in buffer
+        if len(frame_buffer) > 1:
+            self._process_hybrid_batch(
+                frame_buffer,
+                frame_indices,
+                fps,
+                min_frame_gap,
+                last_scene_frame,
+                all_metrics,
+                debug,
+                total_frames,
+                hist_processor,
+                pixel_processor,
+                compute_pixel_difference_batch_gpu,
+                free_gpu_memory,
+            )
+
         cap.release()
 
         self._print_detection_summary(duration, debug, all_metrics)
@@ -435,7 +465,7 @@ class VideoSceneSplitter:
 
     def _detect_scenes_gpu(self, debug=False):
         """
-        GPU-accelerated scene detection with batch processing.
+        GPU-accelerated scene detection with batch processing and async I/O.
 
         This method processes frames in batches on the GPU for improved performance.
         It uses the GPU frame pool pattern to minimize CPU-GPU data transfers:
@@ -443,6 +473,9 @@ class VideoSceneSplitter:
         2. Process both pixel difference and histogram distance on the same batch
         3. Transfer only the results back to CPU
         4. Free GPU memory before processing next batch
+
+        Additionally, it uses async frame reading to overlap I/O with GPU computation,
+        providing 10-20% additional speedup by hiding disk read latency.
         """
         # Import GPU functions (lazy import to avoid errors when GPU unavailable)
         from .detection_gpu import (
@@ -470,6 +503,7 @@ class VideoSceneSplitter:
         batch_size = self._determine_batch_size(frame_height, frame_width, debug)
 
         print(f"GPU batch size: {batch_size}")
+        print("Using async frame reading for I/O overlap")
 
         # Read first frame
         ret, first_frame = cap.read()
@@ -482,39 +516,23 @@ class VideoSceneSplitter:
         all_metrics = []
 
         print("\n" + "=" * 70)
-        print("Detecting hard cuts (GPU accelerated)...")
+        print("Detecting hard cuts (GPU accelerated with async I/O)...")
         print("=" * 70)
 
-        # Frame buffer for batch processing
+        # Frame buffer for batch processing - start with first frame
         frame_buffer = [first_frame]
         frame_indices = [0]  # Track frame numbers for each buffered frame
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                # Process remaining frames in buffer
-                if len(frame_buffer) > 1:
-                    self._process_gpu_batch(
-                        frame_buffer,
-                        frame_indices,
-                        fps,
-                        min_frame_gap,
-                        last_scene_frame,
-                        all_metrics,
-                        debug,
-                        total_frames,
-                        compute_pixel_difference_batch_gpu,
-                        compute_histogram_distance_batch_gpu,
-                        free_gpu_memory,
-                    )
-                break
+        # Use async frame reading to overlap I/O with GPU computation
+        for batch in read_frames_async(cap, batch_size=batch_size):
+            # Add batch frames to buffer
+            for frame in batch:
+                frame_buffer.append(frame)
+                frame_indices.append(frame_num)
+                frame_num += 1
 
-            frame_buffer.append(frame)
-            frame_indices.append(frame_num)
-            frame_num += 1
-
-            # Process batch when buffer is full
-            if len(frame_buffer) >= batch_size + 1:
+            # Process batch when buffer is full (batch_size + 1 for overlap)
+            while len(frame_buffer) >= batch_size + 1:
                 last_scene_frame = self._process_gpu_batch(
                     frame_buffer,
                     frame_indices,
@@ -532,6 +550,22 @@ class VideoSceneSplitter:
                 # Keep last frame for next batch overlap
                 frame_buffer = [frame_buffer[-1]]
                 frame_indices = [frame_indices[-1]]
+
+        # Process remaining frames in buffer
+        if len(frame_buffer) > 1:
+            self._process_gpu_batch(
+                frame_buffer,
+                frame_indices,
+                fps,
+                min_frame_gap,
+                last_scene_frame,
+                all_metrics,
+                debug,
+                total_frames,
+                compute_pixel_difference_batch_gpu,
+                compute_histogram_distance_batch_gpu,
+                free_gpu_memory,
+            )
 
         cap.release()
 
@@ -554,6 +588,37 @@ class VideoSceneSplitter:
             batch_size = max(5, min(batch_size, 120))
 
         return batch_size
+
+    def _read_frames_sync(self, cap, batch_size: int):
+        """
+        Read frames synchronously in batches.
+
+        This is used when async I/O provides no benefit (CPU mode) to avoid
+        the ~10-20% overhead from thread management.
+
+        Based on benchmark results (2026-01-09):
+        - Async without GPU delay: 0.76-0.93x (10-20% slower)
+        - Sync is preferred for pure CPU processing
+
+        Args:
+            cap: OpenCV VideoCapture object (must already be opened).
+            batch_size: Number of frames per batch.
+
+        Yields:
+            list: Batch of frames (numpy arrays).
+        """
+        batch = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                if batch:
+                    yield batch
+                break
+
+            batch.append(frame)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
 
     def _process_gpu_batch(
         self,
@@ -904,6 +969,11 @@ class VideoSceneSplitter:
         re-encoding the video with H.264 codec. Each output file contains one
         complete scene from start to end (or to the next scene boundary).
 
+        Encoder selection is based on the processor mode:
+        - "cpu": Uses libx264 software encoding
+        - "gpu": Uses NVENC hardware encoding (requires NVIDIA GPU)
+        - "auto": Uses NVENC if available, otherwise falls back to libx264
+
         Returns:
             int: Number of successfully created video files.
 
@@ -911,8 +981,11 @@ class VideoSceneSplitter:
             >>> splitter.detect_scenes()
             >>> count = splitter.split_video()
             Splitting video with frame-accurate precision...
+            Encoder: h264_nvenc (hardware)
             Scene 001: 0.00s → 5.23s
             Scene 002: 5.23s → 12.45s
             ✓ Created 2 video files in 'output'
         """
-        return split_video_at_timestamps(self.video_path, self.scene_timestamps, self.output_dir)
+        return split_video_at_timestamps(
+            self.video_path, self.scene_timestamps, self.output_dir, self._processor_request
+        )
