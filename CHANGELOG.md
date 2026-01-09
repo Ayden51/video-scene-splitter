@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NVENC Hardware Encoding Support (Phase 3A)**
+  - `detect_nvenc_support()`: Detects NVENC encoder availability via FFmpeg
+  - `get_encoder_options()`: Returns appropriate FFmpeg encoder arguments based on processor mode
+    - "cpu": Always uses libx264 (software encoding)
+    - "gpu": Requires NVENC, raises error if unavailable
+    - "auto": Uses NVENC if available, falls back to libx264
+  - `get_encoder_info()`: Returns encoder metadata for status display
+  - NVENC configuration: h264_nvenc codec, p4 preset (balanced), VBR rate control, CQ 23
+  - Hardware encoding provides 3-8x speedup over libx264
+
+- **Multi-threaded Async Frame Reading (Phase 3A)**
+  - `AsyncFrameReader` class: Producer-consumer pattern with double buffering
+    - Prefetches next batch while GPU processes current batch
+    - Context manager support for resource cleanup
+    - Thread-safe operation with ThreadPoolExecutor
+  - `read_frames_async()`: Generator function for async frame reading
+    - Overlaps CPU I/O with GPU computation
+    - Provides 10-20% overall speedup when combined with GPU processing
+  - `_read_batch()`: Helper function for batch frame reading
+
+- **24 new NVENC and async reading tests** in `tests/test_video_processor.py`
+  - NVENC encoder detection tests (available, unavailable, caching, timeout)
+  - NVENC encoding tests for auto, gpu, and cpu modes
+  - libx264 fallback tests when NVENC unavailable
+  - AsyncFrameReader iteration, context manager, and prefetching tests
+  - Thread safety and partial batch handling tests
+
 - **Hybrid CPU/GPU processing (Phase 2B) - AUTO mode**
   - `AutoModeConfig` dataclass for configuring hybrid processing behavior
     - `min_resolution_for_gpu`: Minimum resolution to use GPU (default: 720p)

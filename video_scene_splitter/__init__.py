@@ -17,6 +17,7 @@ from .gpu_utils import (
     estimate_optimal_batch_size,
     get_resolution_batch_size_cap,
     select_operation_processor,
+    should_use_async_io,
 )
 from .splitter import VideoSceneSplitter
 
@@ -31,6 +32,7 @@ __all__ = [
     "estimate_optimal_batch_size",
     "get_resolution_batch_size_cap",
     "select_operation_processor",
+    "should_use_async_io",
 ]
 
 # GPU detection functions are available via detection_gpu module
