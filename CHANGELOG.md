@@ -5,6 +5,164 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **NVDEC Hardware Decoding Support (Phase 3B)**
+  - `HardwareVideoReader` class: PyAV-based video reader with optional NVDEC hardware acceleration
+    - Supports H.264, H.265/HEVC, VP9, and AV1 codecs via `NVDEC_SUPPORTED_CODECS`
+    - `detect_nvdec_support()`: Detects NVDEC decoder availability via FFmpeg
+    - `is_codec_nvdec_compatible()`: Checks codec compatibility with NVDEC
+    - `get_decode_info()`: Returns decoder metadata for processor modes
+    - Batch frame reading with `read_frames()` generator
+    - Optional GPU memory output via `_to_cupy()` method
+    - Context manager support for automatic resource cleanup
+    - Graceful fallback to software decoding when NVDEC unavailable
+  - `HardwareDecodeInfo` dataclass for decode status information
+  - Integration with `VideoSceneSplitter` for full GPU pipeline support
+  - **30 new NVDEC tests** in `tests/test_video_processor.py`
+    - NVDEC detection tests (available, unavailable, caching, timeout)
+    - Codec compatibility tests (H.264, HEVC, VP9, AV1)
+    - HardwareVideoReader initialization, context manager, and error handling tests
+    - Frame conversion and GPU memory tests
+
+- **AUTO Mode Optimization (Phase 3B - Updated based on benchmarks)**
+  - Updated `AutoModeConfig` with actual benchmark results (2026-01-10)
+    - `min_resolution_for_gpu`: Changed from 480 to 720 (HD only benefits from GPU)
+    - GPU pixel_diff: Only for HD content (1.46x speedup)
+    - CPU for SD and 4K (GPU is slower due to transfer overhead)
+    - Async I/O: 1.2-1.7x speedup with GPU processing
+  - `select_operation_processor()`: Updated decision logic based on benchmarks
+    - SD (480p): CPU for both histogram and pixel_diff (GPU 0.81x slower)
+    - HD (720p/1080p): CPU for histogram, GPU for pixel_diff (1.46x speedup)
+    - 4K (2160p): CPU for both (GPU 0.91x slower, plus OOM risk)
+  - `should_use_async_io()`: Updated with corrected benchmark values
+
+- **Comprehensive Benchmarking Infrastructure (Phase 3B)**
+  - `benchmarks/scene_detection_benchmark.py`: GPU vs CPU scene detection comparison
+  - `benchmarks/async_io_benchmark.py`: Async vs sync I/O performance testing
+  - `benchmarks/end_to_end_benchmark.py`: Full pipeline comparison (CPU vs GPU vs AUTO)
+  - `benchmarks/hardware_decode_benchmark.py`: NVDEC vs software decoding comparison
+  - `benchmarks/summary.md`: Consolidated benchmark results documentation
+
+- **NVENC Hardware Encoding Support (Phase 3A)**
+  - `detect_nvenc_support()`: Detects NVENC encoder availability via FFmpeg
+  - `get_encoder_options()`: Returns appropriate FFmpeg encoder arguments based on processor mode
+    - "cpu": Always uses libx264 (software encoding)
+    - "gpu": Requires NVENC, raises error if unavailable
+    - "auto": Uses NVENC if available, falls back to libx264
+  - `get_encoder_info()`: Returns encoder metadata for status display
+  - NVENC configuration: h264_nvenc codec, p4 preset (balanced), VBR rate control, CQ 23
+  - Hardware encoding provides 3-8x speedup over libx264
+
+- **Multi-threaded Async Frame Reading (Phase 3A)**
+  - `AsyncFrameReader` class: Producer-consumer pattern with double buffering
+    - Prefetches next batch while GPU processes current batch
+    - Context manager support for resource cleanup
+    - Thread-safe operation with ThreadPoolExecutor
+  - `read_frames_async()`: Generator function for async frame reading
+    - Overlaps CPU I/O with GPU computation
+    - Provides 10-20% overall speedup when combined with GPU processing
+  - `_read_batch()`: Helper function for batch frame reading
+
+- **24 new NVENC and async reading tests** in `tests/test_video_processor.py`
+  - NVENC encoder detection tests (available, unavailable, caching, timeout)
+  - NVENC encoding tests for auto, gpu, and cpu modes
+  - libx264 fallback tests when NVENC unavailable
+  - AsyncFrameReader iteration, context manager, and prefetching tests
+  - Thread safety and partial batch handling tests
+
+- **Hybrid CPU/GPU processing (Phase 2B) - AUTO mode**
+  - `AutoModeConfig` dataclass for configuring hybrid processing behavior
+    - `min_resolution_for_gpu`: Minimum resolution to use GPU (default: 720p)
+    - `use_gpu_for_pixel_diff`: GPU for pixel diff on HD+ (default: True)
+    - `use_gpu_for_histogram`: CPU for histogram (default: False - 1.35x faster)
+    - Resolution-based batch size caps (SD=60, HD=30, 4K=15 frames)
+  - `select_operation_processor()`: Per-operation processor selection function
+    - Returns CPU for histogram computation (always - benchmarked 1.35x faster)
+    - Returns GPU for pixel diff on HD+ content (≥720p - benchmarked 1.29x faster)
+    - Returns CPU for SD content (transfer overhead too high)
+  - `get_resolution_batch_size_cap()`: Resolution-aware batch size selection
+  - `_detect_scenes_hybrid()`: New hybrid detection pipeline in VideoSceneSplitter
+    - Automatically selects optimal processor per operation based on resolution
+    - GPU pixel diff + CPU histogram for HD+ content
+    - Full CPU processing for SD content (optimal for small frames)
+    - GPU OOM error handling with automatic CPU fallback
+  - `compute_pixel_difference_batch_cpu()`: CPU batch pixel difference for hybrid mode
+  - `compute_histogram_distance_batch_cpu()`: CPU batch histogram for hybrid mode
+  - Updated routing logic in `detect_scenes()` to dispatch to hybrid mode for AUTO
+
+- **GPU-accelerated scene detection algorithms (Phase 2A)**
+  - `compute_pixel_difference_gpu()`: Single frame pair pixel difference on GPU
+  - `compute_histogram_distance_gpu()`: Single frame pair histogram distance on GPU
+  - `compute_pixel_difference_batch_gpu()`: Batch processing for pixel difference (5-120 frames)
+  - `compute_histogram_distance_batch_gpu()`: Batch processing for histogram distance
+  - `histogram_correlation_batch_gpu()`: Vectorized batch correlation without Python loops
+  - `bgr_to_gray_gpu()` and `bgr_to_hsv_gpu()`: Color space conversion helpers
+  - `free_gpu_memory()`: Explicit GPU memory cleanup function
+
+- **Enhanced debug mode with detailed GPU hardware information**
+  - Debug mode (`debug=True`) now displays comprehensive GPU hardware details including:
+    - GPU name, memory (total and free), CUDA version, driver version
+    - Compute capability and backend information
+    - Processor mode and acceleration status
+  - Normal mode (`debug=False`) shows brief, user-friendly status messages
+  - Helps users verify GPU detection and troubleshoot hardware acceleration issues
+  - Updated `print_gpu_status()` function to accept `debug` parameter for conditional output
+
+- **GPU benchmarking infrastructure**
+  - `benchmarks/gpu_benchmark.py`: Comprehensive GPU vs CPU performance testing
+  - Support for SD, HD, and 4K video benchmarking
+  - Batch size variation testing (5, 15, 30, 60 frames)
+  - Results documentation in `benchmarks/results/`
+
+- **45 new GPU detection tests** in `tests/test_detection_gpu.py`
+  - Single frame pair GPU tests for pixel difference and histogram distance
+  - Batch processing tests with various sizes (2, 5, 10, 15, 30, 61 frames)
+  - GPU vs CPU result consistency tests (tolerance: pixel 1e-5, histogram rel=0.3)
+  - GPU memory management tests
+  - Color space conversion tests (BGR to Gray, BGR to HSV)
+
+### Changed
+
+- **Improved GPU histogram performance** from 0.32x to 0.77x of CPU speed
+  - Vectorized batch histogram correlation (removed per-pair Python loops)
+  - Added explicit memory cleanup with `del` statements
+  - GPU histogram now competitive at 0.7-0.8x of CPU (was 0.3x before)
+
+### Performance
+
+**Benchmark Results (2026-01-10, RTX 4060 Laptop GPU, 8GB):**
+
+| Component | SD (480p) | HD (1080p) | 4K (2160p) |
+|-----------|-----------|------------|------------|
+| GPU Scene Detection | 0.79x | 1.16x | 0.73x |
+| GPU Pixel Diff | 0.81x | 1.46x | 0.91x |
+| GPU Histogram | 0.54x | 0.86x | 0.65x |
+| NVENC Encoding | 1.62x | 3.25x | 5.90x |
+| AUTO Mode (E2E) | 1.08x | 1.26x | 0.91x |
+| HardwareVideoReader | 0.24x | 0.25x | 0.31x |
+
+**Key Findings:**
+- NVENC encoding provides excellent speedup (1.6-5.9x) across all resolutions
+- GPU pixel diff benefits HD content (1.46x speedup) but not SD/4K
+- CPU histogram is always faster than GPU (1.1-1.9x)
+- HardwareVideoReader (PyAV+NVDEC) is 3-4x slower than cv2.VideoCapture
+- AUTO mode provides modest end-to-end speedup (1.08-1.26x) for SD/HD via hybrid CPU/GPU processing
+
+### Technical Notes
+
+- **Hybrid processing strategy** (AUTO mode, updated 2026-01-10):
+  - Histogram: Always CPU (1.2-1.9x faster than GPU due to transfer overhead)
+  - Pixel diff: GPU for HD only (≥720p, <2160p) where 1.46x speedup observed
+  - Pixel diff: CPU for SD and 4K (GPU slower due to transfer overhead/OOM risk)
+  - Async I/O: 1.2-1.7x speedup when GPU processing time >= 10ms
+- GPU detection algorithms require CuPy with CUDA 13.0+
+- Histogram counting still requires loop (scatter operation limitation)
+- Full histogram parallelization requires custom CUDA kernels (planned for v0.3.0+)
+- HardwareVideoReader implemented but cv2.VideoCapture remains default due to PyAV overhead
+
 ## [0.1.1] - 2026-01-06
 
 This patch release improves documentation, fixes configuration defaults, and enhances the user experience for new users.
