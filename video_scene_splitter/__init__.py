@@ -20,17 +20,29 @@ from .gpu_utils import (
     should_use_async_io,
 )
 from .splitter import VideoSceneSplitter
+from .video_processor import (
+    HardwareDecodeInfo,
+    HardwareVideoReader,
+    detect_nvdec_support,
+    get_decode_info,
+    is_codec_nvdec_compatible,
+)
 
 __version__ = "0.2.0-dev"
 __all__ = [
     "AutoModeConfig",
     "GPUConfig",
     "GPUInfo",
+    "HardwareDecodeInfo",
+    "HardwareVideoReader",
     "ProcessorType",
     "VideoSceneSplitter",
     "detect_cuda_gpu",
+    "detect_nvdec_support",
     "estimate_optimal_batch_size",
+    "get_decode_info",
     "get_resolution_batch_size_cap",
+    "is_codec_nvdec_compatible",
     "select_operation_processor",
     "should_use_async_io",
 ]

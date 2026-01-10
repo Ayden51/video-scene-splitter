@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NVDEC Hardware Decoding Support (Phase 3B)**
+  - `HardwareVideoReader` class: PyAV-based video reader with optional NVDEC hardware acceleration
+    - Supports H.264, H.265/HEVC, VP9, and AV1 codecs via `NVDEC_SUPPORTED_CODECS`
+    - `detect_nvdec_support()`: Detects NVDEC decoder availability via FFmpeg
+    - `is_codec_nvdec_compatible()`: Checks codec compatibility with NVDEC
+    - `get_decode_info()`: Returns decoder metadata for processor modes
+    - Batch frame reading with `read_frames()` generator
+    - Optional GPU memory output via `_to_cupy()` method
+    - Context manager support for automatic resource cleanup
+    - Graceful fallback to software decoding when NVDEC unavailable
+  - `HardwareDecodeInfo` dataclass for decode status information
+  - Integration with `VideoSceneSplitter` for full GPU pipeline support
+  - **30 new NVDEC tests** in `tests/test_video_processor.py`
+    - NVDEC detection tests (available, unavailable, caching, timeout)
+    - Codec compatibility tests (H.264, HEVC, VP9, AV1)
+    - HardwareVideoReader initialization, context manager, and error handling tests
+    - Frame conversion and GPU memory tests
+
+- **AUTO Mode Optimization (Phase 3B - Updated based on benchmarks)**
+  - Updated `AutoModeConfig` with actual benchmark results (2026-01-10)
+    - `min_resolution_for_gpu`: Changed from 480 to 720 (HD only benefits from GPU)
+    - GPU pixel_diff: Only for HD content (1.46x speedup)
+    - CPU for SD and 4K (GPU is slower due to transfer overhead)
+    - Async I/O: 1.2-1.7x speedup with GPU processing
+  - `select_operation_processor()`: Updated decision logic based on benchmarks
+    - SD (480p): CPU for both histogram and pixel_diff (GPU 0.81x slower)
+    - HD (720p/1080p): CPU for histogram, GPU for pixel_diff (1.46x speedup)
+    - 4K (2160p): CPU for both (GPU 0.91x slower, plus OOM risk)
+  - `should_use_async_io()`: Updated with corrected benchmark values
+
+- **Comprehensive Benchmarking Infrastructure (Phase 3B)**
+  - `benchmarks/scene_detection_benchmark.py`: GPU vs CPU scene detection comparison
+  - `benchmarks/async_io_benchmark.py`: Async vs sync I/O performance testing
+  - `benchmarks/end_to_end_benchmark.py`: Full pipeline comparison (CPU vs GPU vs AUTO)
+  - `benchmarks/hardware_decode_benchmark.py`: NVDEC vs software decoding comparison
+  - `benchmarks/summary.md`: Consolidated benchmark results documentation
+
 - **NVENC Hardware Encoding Support (Phase 3A)**
   - `detect_nvenc_support()`: Detects NVENC encoder availability via FFmpeg
   - `get_encoder_options()`: Returns appropriate FFmpeg encoder arguments based on processor mode
@@ -96,19 +133,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- **GPU Pixel Difference**: 1.19-1.43x speedup for HD video (1080p)
-- **GPU Histogram Distance**: 0.69-0.77x of CPU (improved from 0.32x)
-- **Overall**: GPU provides meaningful speedup for HD pixel difference; histogram is acceptable
+**Benchmark Results (2026-01-10, RTX 4060 Laptop GPU, 8GB):**
+
+| Component | SD (480p) | HD (1080p) | 4K (2160p) |
+|-----------|-----------|------------|------------|
+| GPU Scene Detection | 0.79x | 1.16x | 0.73x |
+| GPU Pixel Diff | 0.81x | 1.46x | 0.91x |
+| GPU Histogram | 0.54x | 0.86x | 0.65x |
+| NVENC Encoding | 1.62x | 3.25x | 5.90x |
+| AUTO Mode (E2E) | 1.08x | 1.26x | 0.91x |
+| HardwareVideoReader | 0.24x | 0.25x | 0.31x |
+
+**Key Findings:**
+- NVENC encoding provides excellent speedup (1.6-5.9x) across all resolutions
+- GPU pixel diff benefits HD content (1.46x speedup) but not SD/4K
+- CPU histogram is always faster than GPU (1.1-1.9x)
+- HardwareVideoReader (PyAV+NVDEC) is 3-4x slower than cv2.VideoCapture
+- AUTO mode provides modest end-to-end speedup (1.08-1.26x) for SD/HD via hybrid CPU/GPU processing
 
 ### Technical Notes
 
-- **Hybrid processing strategy** (AUTO mode):
-  - Histogram: Always CPU (1.35x faster than GPU due to transfer overhead)
-  - Pixel diff: GPU for HD+ (≥720p), CPU for SD (transfer overhead dominates)
-  - This strategy provides optimal performance across all video resolutions
+- **Hybrid processing strategy** (AUTO mode, updated 2026-01-10):
+  - Histogram: Always CPU (1.2-1.9x faster than GPU due to transfer overhead)
+  - Pixel diff: GPU for HD only (≥720p, <2160p) where 1.46x speedup observed
+  - Pixel diff: CPU for SD and 4K (GPU slower due to transfer overhead/OOM risk)
+  - Async I/O: 1.2-1.7x speedup when GPU processing time >= 10ms
 - GPU detection algorithms require CuPy with CUDA 13.0+
 - Histogram counting still requires loop (scatter operation limitation)
 - Full histogram parallelization requires custom CUDA kernels (planned for v0.3.0+)
+- HardwareVideoReader implemented but cv2.VideoCapture remains default due to PyAV overhead
 
 ## [0.1.1] - 2026-01-06
 
