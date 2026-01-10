@@ -42,7 +42,12 @@ from video_scene_splitter.gpu_utils import (
     select_processor,
 )
 from video_scene_splitter.splitter import VideoSceneSplitter
-from video_scene_splitter.video_processor import detect_nvenc_support, get_encoder_info
+from video_scene_splitter.video_processor import (
+    detect_nvdec_support,
+    detect_nvenc_support,
+    get_decode_info,
+    get_encoder_info,
+)
 
 
 @dataclass
@@ -57,6 +62,7 @@ class PipelineResult:
     duration_sec: float
     processor_mode: str
     actual_processor: str
+    decoder_used: str
     encoder_used: str
     async_io_used: bool
     detection_time_sec: float
@@ -66,6 +72,7 @@ class PipelineResult:
     fps_overall: float
     peak_memory_mb: float
     output_size_mb: float
+    hardware_decode: bool = False
     error: str | None = None
 
 
@@ -85,7 +92,7 @@ class BenchmarkConfig:
     """Configuration for the end-to-end benchmark."""
 
     iterations: int = 2
-    processor_modes: list[str] = field(default_factory=lambda: ["cpu", "gpu", "auto"])
+    processor_modes: list[str] = field(default_factory=lambda: ["cpu", "gpu", "gpu_nvdec", "auto"])
     threshold: float = 30.0
     min_scene_duration: float = 1.5
     batch_size: int = 30
@@ -98,6 +105,7 @@ class EndToEndBenchmark:
     def __init__(self, config: BenchmarkConfig | None = None):
         self.config = config or BenchmarkConfig()
         self.gpu_info: GPUInfo = detect_cuda_gpu()
+        self.nvdec_available = detect_nvdec_support()
         self.nvenc_available = detect_nvenc_support()
         self.results: list[PipelineResult] = []
         self.auto_validations: list[AutoModeValidation] = []
@@ -213,7 +221,27 @@ class EndToEndBenchmark:
             )
         )
 
-        # 3. Frame Reading: Async vs Sync (GPU mode should use async)
+        # 3. Video Decoding: NVDEC vs Software
+        decode_info = get_decode_info("auto")
+        if self.nvdec_available:
+            expected_decoder = "NVDEC"
+            dec_reason = "NVDEC available for hardware decoding"
+        else:
+            expected_decoder = "Software"
+            dec_reason = "NVDEC not available, using software decoding"
+
+        actual_decoder = "NVDEC" if decode_info.get("use_hardware", False) else "Software"
+        validations.append(
+            AutoModeValidation(
+                operation="Video Decoding",
+                expected_choice=expected_decoder,
+                actual_choice=actual_decoder,
+                is_correct=expected_decoder == actual_decoder,
+                reason=dec_reason,
+            )
+        )
+
+        # 4. Frame Reading: Async vs Sync (GPU mode should use async)
         if self.gpu_info.available:
             expected_io = "Async"
             io_reason = "GPU processing benefits from async I/O overlap"
@@ -282,10 +310,12 @@ class EndToEndBenchmark:
                     / 1024
                 )
 
-                # Get actual processor and encoder used
+                # Get actual processor, decoder, and encoder used
                 actual_processor = splitter._active_processor.value
+                decoder_info = get_decode_info(processor_mode)
                 encoder_info = get_encoder_info(processor_mode)
-                async_used = actual_processor == "gpu"
+                async_used = actual_processor == "gpu" or processor_mode == "gpu_nvdec"
+                hardware_decode = decoder_info.get("use_hardware", False)
 
                 fps_overall = video_info["total_frames"] / total_time if total_time > 0 else 0
 
@@ -298,6 +328,7 @@ class EndToEndBenchmark:
                     duration_sec=video_info["duration"],
                     processor_mode=processor_mode,
                     actual_processor=actual_processor,
+                    decoder_used=decoder_info["name"],
                     encoder_used=encoder_info["name"],
                     async_io_used=async_used,
                     detection_time_sec=detection_time,
@@ -307,6 +338,7 @@ class EndToEndBenchmark:
                     fps_overall=fps_overall,
                     peak_memory_mb=max(0, peak_memory - initial_memory),
                     output_size_mb=output_size,
+                    hardware_decode=hardware_decode,
                 )
 
             except Exception as e:
@@ -319,6 +351,7 @@ class EndToEndBenchmark:
                     duration_sec=video_info["duration"],
                     processor_mode=processor_mode,
                     actual_processor="unknown",
+                    decoder_used="unknown",
                     encoder_used="unknown",
                     async_io_used=False,
                     detection_time_sec=0,
@@ -328,6 +361,7 @@ class EndToEndBenchmark:
                     fps_overall=0,
                     peak_memory_mb=0,
                     output_size_mb=0,
+                    hardware_decode=False,
                     error=str(e),
                 )
 
@@ -359,9 +393,12 @@ class EndToEndBenchmark:
         cpu_baseline_time = None
 
         for mode in self.config.processor_modes:
-            # Skip GPU mode if not available
+            # Skip GPU modes if not available
             if mode == "gpu" and not self.gpu_info.available:
                 print(f"\n[{mode.upper()}] Skipped - GPU not available")
+                continue
+            if mode == "gpu_nvdec" and not self.nvdec_available:
+                print(f"\n[{mode.upper()}] Skipped - NVDEC not available")
                 continue
 
             print(f"\n[{mode.upper()} Mode]")
@@ -380,11 +417,12 @@ class EndToEndBenchmark:
                         speedup = cpu_baseline_time / result.total_time_sec
                         speedup_str = f", Speedup: {speedup:.2f}x"
 
+                    decode_info = f", Decoder: {result.decoder_used}"
                     print(
                         f"  Run {i + 1}: Total={result.total_time_sec:.2f}s "
                         f"(Detect={result.detection_time_sec:.2f}s, "
                         f"Split={result.split_time_sec:.2f}s)"
-                        f"{speedup_str}, {result.scenes_detected} scenes"
+                        f"{speedup_str}, {result.scenes_detected} scenes{decode_info}"
                     )
 
                     if mode == "cpu" and i == 0:
@@ -404,6 +442,7 @@ class EndToEndBenchmark:
         if self.gpu_info.available:
             print(f"  GPU Name: {self.gpu_info.name}")
             print(f"  GPU Memory: {self.gpu_info.memory_total_mb} MB")
+        print(f"  NVDEC Available: {self.nvdec_available}")
         print(f"  NVENC Available: {self.nvenc_available}")
 
         # Find test videos
@@ -438,10 +477,10 @@ class EndToEndBenchmark:
         print("=" * 80)
 
         print(
-            f"\n{'Resolution':<15} {'Mode':<8} {'Processor':<10} {'Encoder':<12} "
-            f"{'Total(s)':<10} {'Detect(s)':<10} {'Split(s)':<10} {'Speedup':<10}"
+            f"\n{'Resolution':<12} {'Mode':<10} {'Proc':<6} {'Decoder':<12} {'Encoder':<12} "
+            f"{'Total(s)':<10} {'Detect(s)':<10} {'Speedup':<10}"
         )
-        print("-" * 100)
+        print("-" * 110)
 
         for label, results in all_results.items():
             if not results:
@@ -453,7 +492,6 @@ class EndToEndBenchmark:
                 if mode_results:
                     avg_total = sum(r.total_time_sec for r in mode_results) / len(mode_results)
                     avg_detect = sum(r.detection_time_sec for r in mode_results) / len(mode_results)
-                    avg_split = sum(r.split_time_sec for r in mode_results) / len(mode_results)
 
                     if mode == "cpu":
                         cpu_baseline = avg_total
@@ -466,9 +504,9 @@ class EndToEndBenchmark:
 
                     r = mode_results[0]
                     print(
-                        f"{label:<15} {mode:<8} {r.actual_processor:<10} "
-                        f"{r.encoder_used:<12} {avg_total:<10.2f} "
-                        f"{avg_detect:<10.2f} {avg_split:<10.2f} {speedup_str:<10}"
+                        f"{label:<12} {mode:<10} {r.actual_processor:<6} "
+                        f"{r.decoder_used:<12} {r.encoder_used:<12} {avg_total:<10.2f} "
+                        f"{avg_detect:<10.2f} {speedup_str:<10}"
                     )
             print()
 
@@ -501,6 +539,7 @@ class EndToEndBenchmark:
             if self.gpu_info.available:
                 f.write(f"GPU Name: {self.gpu_info.name}\n")
                 f.write(f"GPU Memory: {self.gpu_info.memory_total_mb} MB\n")
+            f.write(f"NVDEC Available: {self.nvdec_available}\n")
             f.write(f"NVENC Available: {self.nvenc_available}\n\n")
 
             f.write("BENCHMARK CONFIGURATION\n")
@@ -511,20 +550,20 @@ class EndToEndBenchmark:
             f.write(f"Batch size: {self.config.batch_size}\n\n")
 
             f.write("DETAILED RESULTS\n")
-            f.write("-" * 100 + "\n")
+            f.write("-" * 120 + "\n")
             f.write(
-                f"{'Video':<20} {'Res':<6} {'Mode':<6} {'Proc':<6} {'Encoder':<12} "
-                f"{'Total':<8} {'Detect':<8} {'Split':<8} {'Scenes':<8} {'FPS':<8}\n"
+                f"{'Video':<20} {'Res':<6} {'Mode':<10} {'Proc':<6} {'Decoder':<12} "
+                f"{'Encoder':<12} {'Total':<8} {'Detect':<8} {'Scenes':<8} {'FPS':<8}\n"
             )
-            f.write("-" * 100 + "\n")
+            f.write("-" * 120 + "\n")
 
             for result in self.results:
                 if not result.error:
                     f.write(
                         f"{result.video_name:<20} {result.resolution:<6} "
-                        f"{result.processor_mode:<6} {result.actual_processor:<6} "
-                        f"{result.encoder_used:<12} {result.total_time_sec:<8.2f} "
-                        f"{result.detection_time_sec:<8.2f} {result.split_time_sec:<8.2f} "
+                        f"{result.processor_mode:<10} {result.actual_processor:<6} "
+                        f"{result.decoder_used:<12} {result.encoder_used:<12} "
+                        f"{result.total_time_sec:<8.2f} {result.detection_time_sec:<8.2f} "
                         f"{result.scenes_detected:<8} {result.fps_overall:<8.1f}\n"
                     )
 
@@ -547,9 +586,11 @@ class EndToEndBenchmark:
             f.write("KEY FINDINGS\n")
             f.write("=" * 80 + "\n")
             f.write("- GPU mode provides significant speedup for scene detection\n")
+            f.write("- NVDEC hardware decoding reduces frame reading overhead\n")
             f.write("- NVENC encoding reduces video splitting time by 3-8x\n")
             f.write("- AUTO mode correctly selects optimal processing path\n")
-            f.write("- Higher resolutions show greater GPU/NVENC advantage\n")
+            f.write("- Higher resolutions show greater GPU/NVDEC/NVENC advantage\n")
+            f.write("- gpu_nvdec mode combines NVDEC decode + GPU processing\n")
             f.write("- Async I/O provides additional 10-20% improvement in GPU mode\n")
 
         print(f"\nReport saved to: {report_path}")
@@ -559,7 +600,7 @@ def main():
     """Main entry point for the benchmark."""
     config = BenchmarkConfig(
         iterations=2,
-        processor_modes=["cpu", "gpu", "auto"],
+        processor_modes=["cpu", "gpu", "gpu_nvdec", "auto"],
         threshold=30.0,
         min_scene_duration=1.5,
         batch_size=30,
@@ -573,7 +614,7 @@ def quick_benchmark():
     """Run a quick benchmark with fewer iterations."""
     config = BenchmarkConfig(
         iterations=1,
-        processor_modes=["cpu", "auto"],
+        processor_modes=["cpu", "gpu_nvdec", "auto"],
         threshold=30.0,
         min_scene_duration=1.5,
         batch_size=30,
