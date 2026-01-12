@@ -28,13 +28,7 @@ from .gpu_utils import (
     should_use_async_io,
 )
 from .utils import save_debug_frames, save_metrics_to_csv, save_timestamps_to_file
-from .video_processor import (
-    HardwareVideoReader,
-    detect_nvdec_support,
-    is_codec_nvdec_compatible,
-    read_frames_async,
-    split_video_at_timestamps,
-)
+from .video_processor import read_frames_async, split_video_at_timestamps
 
 
 class VideoSceneSplitter:
@@ -471,224 +465,17 @@ class VideoSceneSplitter:
 
     def _detect_scenes_gpu(self, debug=False):
         """
-        GPU-accelerated scene detection with batch processing.
+        GPU-accelerated scene detection with batch processing and async I/O.
 
         This method processes frames in batches on the GPU for improved performance.
         It uses the GPU frame pool pattern to minimize CPU-GPU data transfers:
-        1. Upload a batch of frames to GPU once (or use NVDEC for direct GPU decode)
+        1. Upload a batch of frames to GPU once
         2. Process both pixel difference and histogram distance on the same batch
         3. Transfer only the results back to CPU
         4. Free GPU memory before processing next batch
 
-        When NVDEC hardware decoding is available, uses HardwareVideoReader with
-        to_gpu=True to decode frames directly to GPU memory, eliminating the
-        CPU-to-GPU transfer bottleneck that previously made GPU processing slower
-        than CPU for many workloads.
-
-        Falls back to cv2.VideoCapture + async I/O when:
-        - PyAV is not installed
-        - NVDEC is not available
-        - Video codec is not NVDEC-compatible
-        """
-        # Try to use NVDEC-accelerated frame reading first
-        use_nvdec = self._should_use_nvdec_for_gpu(debug)
-
-        if use_nvdec:
-            return self._detect_scenes_gpu_nvdec(debug)
-        else:
-            return self._detect_scenes_gpu_cv2(debug)
-
-    def _should_use_nvdec_for_gpu(self, debug: bool = False) -> bool:
-        """
-        Determine if NVDEC should be used for GPU scene detection.
-
-        Checks:
-        1. PyAV is available (required for HardwareVideoReader)
-        2. NVDEC hardware decoding is available
-        3. Video codec is NVDEC-compatible (H.264, H.265, VP9, AV1)
-
-        Args:
-            debug: If True, print diagnostic information.
-
-        Returns:
-            bool: True if NVDEC should be used, False to fall back to cv2.
-        """
-        # Check PyAV availability
-        try:
-            import av
-        except ImportError:
-            if debug:
-                print("⚠ PyAV not available, using cv2 for frame reading")
-            return False
-
-        # Check NVDEC availability
-        if not detect_nvdec_support():
-            if debug:
-                print("⚠ NVDEC not available, using cv2 for frame reading")
-            return False
-
-        # Check video codec compatibility
-        # Need to open video briefly to check codec
-        try:
-            import av
-
-            container = av.open(self.video_path)
-            if not container.streams.video:
-                container.close()
-                return False
-            codec_name = container.streams.video[0].codec_context.name
-            container.close()
-
-            if not is_codec_nvdec_compatible(codec_name):
-                if debug:
-                    print(f"⚠ Codec '{codec_name}' not NVDEC-compatible, using cv2")
-                return False
-        except Exception as e:
-            if debug:
-                print(f"⚠ Could not check codec: {e}, using cv2")
-            return False
-
-        if debug:
-            print("✓ Using NVDEC hardware decoding with direct GPU memory output")
-
-        return True
-
-    def _detect_scenes_gpu_nvdec(self, debug=False):
-        """
-        GPU scene detection with NVDEC hardware decoding.
-
-        Uses HardwareVideoReader with to_gpu=True to decode frames directly
-        to GPU memory as CuPy arrays. This eliminates the CPU-to-GPU transfer
-        bottleneck that made GPU processing slower than CPU.
-
-        The frames are processed directly on GPU without CPU round-trip:
-        NVDEC decode → GPU memory (CuPy) → GPU batch processing → results
-        """
-        # Import GPU functions (lazy import to avoid errors when GPU unavailable)
-        from .detection_gpu import (
-            compute_histogram_distance_batch_gpu,
-            compute_pixel_difference_batch_gpu,
-            free_gpu_memory,
-        )
-
-        # Open video with HardwareVideoReader
-        reader = HardwareVideoReader(
-            self.video_path,
-            use_hardware=True,
-            batch_size=30,  # Default, will be overridden in read_frames
-        )
-
-        fps = reader.fps
-        total_frames = reader.frame_count or 0
-        duration = total_frames / fps if fps > 0 else 0
-        min_frame_gap = int(self.min_scene_duration * fps)
-        frame_width = reader.width
-        frame_height = reader.height
-
-        # Handle case where frame_count is unknown (some formats)
-        if total_frames == 0:
-            # Fall back to cv2 to get frame count
-            cap = cv2.VideoCapture(self.video_path)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = total_frames / fps if fps > 0 else 0
-            cap.release()
-
-        print(f"Video: {fps:.2f} FPS, {total_frames} frames, {duration:.2f}s")
-        print(f"Threshold: {self.threshold}")
-        print(f"Min scene duration: {self.min_scene_duration}s ({min_frame_gap} frames)")
-
-        # Determine batch size
-        batch_size = self._determine_batch_size(frame_height, frame_width, debug)
-
-        print(f"GPU batch size: {batch_size}")
-        hw_status = "NVDEC" if reader.hardware_enabled else "software"
-        print(f"Frame decoding: {hw_status} → GPU memory (zero-copy)")
-
-        frame_num = 0
-        last_scene_frame = 0
-        self.scene_timestamps = [0.0]
-        all_metrics = []
-        first_frame = None
-
-        print("\n" + "=" * 70)
-        print("Detecting hard cuts (GPU accelerated with NVDEC direct decode)...")
-        print("=" * 70)
-
-        # Frame buffer for batch processing
-        frame_buffer = []
-        frame_indices = []
-
-        try:
-            # Read frames directly to GPU memory
-            for batch in reader.read_frames(batch_size=batch_size, to_gpu=True):
-                # First batch: extract first frame for initialization
-                if first_frame is None and batch:
-                    first_frame = batch[0]
-                    frame_buffer = [first_frame]
-                    frame_indices = [0]
-                    frame_num = 1
-                    # Add rest of first batch
-                    for frame in batch[1:]:
-                        frame_buffer.append(frame)
-                        frame_indices.append(frame_num)
-                        frame_num += 1
-                else:
-                    # Add batch frames to buffer
-                    for frame in batch:
-                        frame_buffer.append(frame)
-                        frame_indices.append(frame_num)
-                        frame_num += 1
-
-                # Process batch when buffer is full (batch_size + 1 for overlap)
-                while len(frame_buffer) >= batch_size + 1:
-                    last_scene_frame = self._process_gpu_batch(
-                        frame_buffer,
-                        frame_indices,
-                        fps,
-                        min_frame_gap,
-                        last_scene_frame,
-                        all_metrics,
-                        debug,
-                        total_frames,
-                        compute_pixel_difference_batch_gpu,
-                        compute_histogram_distance_batch_gpu,
-                        free_gpu_memory,
-                    )
-
-                    # Keep last frame for next batch overlap
-                    frame_buffer = [frame_buffer[-1]]
-                    frame_indices = [frame_indices[-1]]
-
-            # Process remaining frames in buffer
-            if len(frame_buffer) > 1:
-                self._process_gpu_batch(
-                    frame_buffer,
-                    frame_indices,
-                    fps,
-                    min_frame_gap,
-                    last_scene_frame,
-                    all_metrics,
-                    debug,
-                    total_frames,
-                    compute_pixel_difference_batch_gpu,
-                    compute_histogram_distance_batch_gpu,
-                    free_gpu_memory,
-                )
-        finally:
-            reader.close()
-
-        self._print_detection_summary(duration, debug, all_metrics)
-        return self.scene_timestamps
-
-    def _detect_scenes_gpu_cv2(self, debug=False):
-        """
-        GPU scene detection with cv2.VideoCapture (fallback path).
-
-        Uses cv2.VideoCapture for frame reading with async I/O to overlap
-        disk reads with GPU computation. Frames are read as NumPy arrays
-        and transferred to GPU for batch processing.
-
-        This is the fallback path when NVDEC is not available.
+        Additionally, it uses async frame reading to overlap I/O with GPU computation,
+        providing 10-20% additional speedup by hiding disk read latency.
         """
         # Import GPU functions (lazy import to avoid errors when GPU unavailable)
         from .detection_gpu import (
@@ -716,7 +503,7 @@ class VideoSceneSplitter:
         batch_size = self._determine_batch_size(frame_height, frame_width, debug)
 
         print(f"GPU batch size: {batch_size}")
-        print("Using async frame reading for I/O overlap (cv2 fallback)")
+        print("Using async frame reading for I/O overlap")
 
         # Read first frame
         ret, first_frame = cap.read()

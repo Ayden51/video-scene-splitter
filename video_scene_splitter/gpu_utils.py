@@ -432,36 +432,30 @@ def estimate_optimal_batch_size(
 class AutoModeConfig:
     """Configuration for AUTO mode hybrid processing.
 
-    Based on actual benchmark results (2026-01-10):
-    - SD (480p): GPU provides 0.79x overall speedup (CPU faster)
-    - HD (1080p): GPU provides 1.16x overall speedup (modest benefit)
-    - 4K (2160p): GPU provides 0.73x speedup (CPU faster due to transfer overhead)
-
-    End-to-end pipeline results (AUTO mode vs CPU baseline):
-    - SD (480p): AUTO 1.08x speedup (hybrid CPU/GPU + NVENC)
-    - HD (1080p): AUTO 1.26x speedup (hybrid CPU/GPU + NVENC)
-    - 4K (2160p): AUTO 0.91x speedup (CPU detection + NVENC)
+    Based on actual benchmark results (2026-01-09):
+    - SD (480p): GPU provides 1.32x overall speedup
+    - HD (1080p): GPU provides 1.39x overall speedup (best benefit)
+    - 4K (2160p): GPU provides 0.88x speedup (CPU faster due to transfer overhead)
 
     AUTO mode optimizes performance by using the best processor for each operation:
-    - GPU for pixel difference on HD content only (1.46x speedup)
-    - CPU for pixel difference on SD content (GPU 0.81x is slower)
-    - CPU for pixel difference on 4K content (GPU 0.91x is slower, plus OOM risk)
-    - CPU for histogram computation (always, GPU is 0.54-0.86x slower)
-    - Async I/O when GPU processing time >= 10ms per batch (1.2-1.7x speedup)
+    - GPU for pixel difference on SD/HD content (1.32-1.74x speedup)
+    - CPU for pixel difference on 4K content (GPU 0.88x is slower)
+    - CPU for histogram computation (always, as CPU is faster than GPU)
+    - Async I/O when GPU processing time >= 10ms per batch (1.01-1.54x speedup)
 
     Attributes:
-        min_resolution_for_gpu: Minimum vertical resolution for GPU pixel diff.
-            Content below this uses CPU only. Default: 720 (HD threshold).
+        min_resolution_for_gpu: Minimum vertical resolution for GPU processing.
+            Content below this uses CPU only. Default: 480 (SD threshold).
         max_resolution_for_gpu: Maximum vertical resolution for GPU pixel diff.
             Content above this uses CPU (GPU overhead exceeds benefit). Default: 1440 (below 4K).
-        use_gpu_for_pixel_diff: Whether to use GPU for pixel difference on HD.
-            Default: True (GPU is 1.46x faster for HD content only).
+        use_gpu_for_pixel_diff: Whether to use GPU for pixel difference on SD/HD.
+            Default: True (GPU is 1.32-1.74x faster for SD/HD content).
         use_gpu_for_histogram: Whether to use GPU for histogram computation.
-            Default: False (CPU is 1.2-1.9x faster due to transfer overhead).
+            Default: False (CPU is faster due to transfer overhead).
         use_async_io: Whether to use async I/O for GPU processing.
-            Default: True (1.2-1.7x speedup when GPU processing time >= 10ms).
+            Default: True (1.01-1.54x speedup when GPU processing time >= 10ms).
         min_gpu_delay_for_async_ms: Minimum GPU processing time per batch to benefit from async.
-            Default: 10ms (async provides 1.2-1.7x speedup above this threshold).
+            Default: 10ms (async provides 1.01-1.54x speedup above this threshold).
         max_batch_size_sd: Maximum batch size for SD content (<720p).
         max_batch_size_hd: Maximum batch size for HD content (720p-1080p).
         max_batch_size_4k: Maximum batch size for 4K content (≥2160p).
@@ -469,18 +463,18 @@ class AutoModeConfig:
         memory_fraction: Conservative memory usage fraction. Default: 0.7.
     """
 
-    # Resolution thresholds based on benchmark results (2026-01-10)
-    min_resolution_for_gpu: int = 720  # HD threshold (GPU provides 1.46x pixel diff speedup)
-    max_resolution_for_gpu: int = 1440  # Below 4K (4K GPU is 0.91x, slower than CPU)
-    use_gpu_for_pixel_diff: bool = True  # GPU 1.46x faster for HD only
-    use_gpu_for_histogram: bool = False  # CPU always faster (1.2-1.9x)
+    # Resolution thresholds based on benchmark results
+    min_resolution_for_gpu: int = 480  # SD threshold (GPU provides 1.32x speedup)
+    max_resolution_for_gpu: int = 1440  # Below 4K (4K GPU is 0.88x, slower than CPU)
+    use_gpu_for_pixel_diff: bool = True  # GPU 1.32-1.74x faster for SD/HD
+    use_gpu_for_histogram: bool = False  # CPU always faster (transfer overhead)
 
     # Async I/O settings based on benchmark results
-    use_async_io: bool = True  # Async provides 1.2-1.7x speedup with GPU
+    use_async_io: bool = True  # Async provides 1.01-1.54x speedup with GPU
     min_gpu_delay_for_async_ms: float = 10.0  # Minimum GPU time to benefit from async
 
     # Batch size caps (prevent OOM, especially for 4K even in CPU mode)
-    max_batch_size_sd: int = 60  # SD: CPU mode, larger batches OK
+    max_batch_size_sd: int = 60  # SD: minimal GPU benefit, larger batches OK
     max_batch_size_hd: int = 30  # HD: balanced (best GPU benefit)
     max_batch_size_4k: int = 15  # 4K: memory constrained, CPU mode
     memory_fraction: float = 0.7  # Conservative memory usage
@@ -522,16 +516,16 @@ def select_operation_processor(
 ) -> ProcessorType:
     """Select the optimal processor for a specific operation in AUTO mode.
 
-    Based on actual benchmark results (2026-01-10):
-    - SD (480p): GPU pixel diff 0.81x (CPU faster), overall 0.79x
-    - HD (1080p): GPU pixel diff 1.46x faster, overall 1.16x speedup
-    - 4K (2160p): GPU pixel diff 0.91x (CPU faster), overall 0.73x
-    - Histogram: CPU always faster (GPU is 0.54-0.86x slower)
+    Based on actual benchmark results (2026-01-09):
+    - SD (480p): GPU pixel diff 1.36-1.74x faster, overall 1.32x speedup
+    - HD (1080p): GPU pixel diff 0.98-2.04x faster, overall 1.39x speedup
+    - 4K (2160p): GPU pixel diff 0.57-1.46x, overall 0.88x (CPU faster)
+    - Histogram: CPU always faster (transfer overhead)
 
     Args:
         operation: Operation type ("pixel_diff" or "histogram").
         frame_height: Height of video frames in pixels.
-        frame_width: Width of video frames in pixels (kept for API compatibility).
+        frame_width: Width of video frames in pixels (for memory estimation).
         gpu_info: GPU detection information.
         config: Optional AutoModeConfig for customization.
         verbose: If True, log decision rationale.
@@ -573,29 +567,38 @@ def select_operation_processor(
                 print("    → pixel_diff: CPU (forced via config)")
             return ProcessorType.CPU
 
-        # 4K content: CPU (GPU 0.91x speedup means CPU is faster)
+        # 4K content: CPU (GPU 0.88x speedup means CPU is faster)
         if frame_height >= 2160:
             if verbose:
                 print(
                     f"    → pixel_diff: CPU for {resolution_class} "
-                    f"(benchmark: GPU 0.91x speedup, CPU faster)"
+                    f"(benchmark: GPU 0.88x speedup, CPU faster)"
                 )
             return ProcessorType.CPU
 
-        # HD content: GPU (1.46x pixel diff speedup)
+        # HD content: GPU (1.39x overall speedup)
+        if frame_height >= 720:
+            if verbose:
+                print(
+                    f"    → pixel_diff: GPU for {resolution_class} "
+                    f"(benchmark: 1.39x overall speedup)"
+                )
+            return ProcessorType.GPU
+
+        # SD content: GPU (1.32x overall speedup)
         if frame_height >= config.min_resolution_for_gpu:
             if verbose:
                 print(
                     f"    → pixel_diff: GPU for {resolution_class} "
-                    f"(benchmark: 1.46x pixel diff speedup)"
+                    f"(benchmark: 1.32x overall speedup)"
                 )
             return ProcessorType.GPU
 
-        # SD content: CPU (GPU 0.81x speedup means CPU is faster)
+        # Below minimum resolution: CPU
         if verbose:
             print(
                 f"    → pixel_diff: CPU for {resolution_class} "
-                f"(benchmark: GPU 0.81x speedup, CPU faster)"
+                f"(below {config.min_resolution_for_gpu}p threshold)"
             )
         return ProcessorType.CPU
 
@@ -613,9 +616,9 @@ def should_use_async_io(
 ) -> bool:
     """Determine whether to use async I/O for frame reading.
 
-    Based on benchmark results (2026-01-10):
-    - Without GPU delay (0ms): Async has ~5-20% overhead (0.81-0.98x)
-    - With GPU delay >= 10ms: Async provides 1.2-1.7x speedup
+    Based on benchmark results (2026-01-09):
+    - Without GPU delay (0ms): Async has ~10-20% overhead (0.76-0.93x)
+    - With GPU delay >= 10ms: Async provides 1.01-1.54x speedup
 
     Async I/O benefits come from overlapping disk I/O with GPU computation.
     For CPU-only processing, sync I/O is preferred (no overhead).
@@ -650,11 +653,11 @@ def should_use_async_io(
             print("    → Frame I/O: Sync (disabled via config)")
         return False
 
-    # GPU mode: use async I/O (1.2-1.7x speedup)
+    # GPU mode: use async I/O (1.01-1.54x speedup)
     if verbose:
         print(
             f"    → Frame I/O: Async (GPU processing >= {config.min_gpu_delay_for_async_ms}ms, "
-            f"1.2-1.7x speedup)"
+            f"1.01-1.54x speedup)"
         )
     return True
 
