@@ -101,8 +101,6 @@ class TestGPUConfig:
         assert config.batch_size == 30
         assert config.memory_fraction == 0.8
         assert config.use_nvenc is True
-        assert config.use_nvdec is True
-        assert config.use_pyav_hw is True
 
     def test_custom_values(self):
         """GPUConfig should accept custom values."""

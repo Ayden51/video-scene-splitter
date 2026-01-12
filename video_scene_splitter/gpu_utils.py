@@ -74,15 +74,11 @@ class GPUConfig:
         batch_size: Number of frames to process in a single GPU batch.
         memory_fraction: Maximum fraction of GPU memory to use (0.0-1.0).
         use_nvenc: Whether to use NVIDIA NVENC for video encoding.
-        use_nvdec: Whether to use NVIDIA NVDEC for video decoding.
-        use_pyav_hw: Whether to use PyAV hardware acceleration.
     """
 
     batch_size: int = 30
     memory_fraction: float = 0.8
     use_nvenc: bool = True
-    use_nvdec: bool = True
-    use_pyav_hw: bool = True
 
 
 class AccelerationBackend(ABC):

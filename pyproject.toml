@@ -13,8 +13,6 @@ dependencies = [
     # NumPy 2.x compatible with CuPy 13.6.0 (tested up to NumPy 2.3)
     "numpy>=2.0.0,<2.4",
     "opencv-python>=4.10.0",
-    # Hardware-accelerated video I/O (optional, graceful fallback)
-    "av>=13.0.0",
 ]
 
 [project.optional-dependencies]

@@ -465,7 +465,7 @@ class VideoSceneSplitter:
 
     def _detect_scenes_gpu(self, debug=False):
         """
-        GPU-accelerated scene detection with batch processing and async I/O.
+        GPU-accelerated scene detection with batch processing.
 
         This method processes frames in batches on the GPU for improved performance.
         It uses the GPU frame pool pattern to minimize CPU-GPU data transfers:
@@ -474,8 +474,9 @@ class VideoSceneSplitter:
         3. Transfer only the results back to CPU
         4. Free GPU memory before processing next batch
 
-        Additionally, it uses async frame reading to overlap I/O with GPU computation,
-        providing 10-20% additional speedup by hiding disk read latency.
+        Uses cv2.VideoCapture for frame reading (CPU decode) with async I/O to overlap
+        disk reads with GPU computation. Frames are read as NumPy arrays and
+        transferred to GPU for batch processing.
         """
         # Import GPU functions (lazy import to avoid errors when GPU unavailable)
         from .detection_gpu import (
@@ -503,7 +504,7 @@ class VideoSceneSplitter:
         batch_size = self._determine_batch_size(frame_height, frame_width, debug)
 
         print(f"GPU batch size: {batch_size}")
-        print("Using async frame reading for I/O overlap")
+        print("Frame decoding: cv2 (CPU) → GPU upload (CuPy)")
 
         # Read first frame
         ret, first_frame = cap.read()
@@ -516,7 +517,7 @@ class VideoSceneSplitter:
         all_metrics = []
 
         print("\n" + "=" * 70)
-        print("Detecting hard cuts (GPU accelerated with async I/O)...")
+        print("Detecting hard cuts (GPU accelerated)...")
         print("=" * 70)
 
         # Frame buffer for batch processing - start with first frame
