@@ -39,7 +39,6 @@ import cv2
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from video_scene_splitter import GPUInfo, VideoSceneSplitter, detect_cuda_gpu
-from video_scene_splitter.video_processor import detect_nvdec_support
 
 
 @dataclass
@@ -67,7 +66,7 @@ class BenchmarkConfig:
     """Configuration for benchmark runs."""
 
     iterations: int = 3
-    processor_modes: list[str] = field(default_factory=lambda: ["cpu", "gpu", "gpu_nvdec", "auto"])
+    processor_modes: list[str] = field(default_factory=lambda: ["cpu", "gpu", "auto"])
     batch_sizes: list[int | str] = field(default_factory=lambda: [5, 15, 30, 60, "auto"])
     memory_fractions: list[float] = field(default_factory=lambda: [0.5, 0.7, 0.8])
     threshold: float = 30.0
@@ -80,7 +79,6 @@ class SceneDetectionBenchmark:
     def __init__(self, config: BenchmarkConfig | None = None):
         self.config = config or BenchmarkConfig()
         self.gpu_info: GPUInfo = detect_cuda_gpu()
-        self.nvdec_available: bool = detect_nvdec_support()
         self.results: list[BenchmarkResult] = []
         self.cpu_baseline: dict[str, BenchmarkResult] = {}  # video_name -> CPU result
 
@@ -98,7 +96,6 @@ class SceneDetectionBenchmark:
                 f"{self.gpu_info.memory_free_mb:.0f} MB free"
             )
             print(f"  CUDA: {self.gpu_info.cuda_version}")
-        print(f"  NVDEC: {'Available' if self.nvdec_available else 'Not Available'}")
         print("\nBenchmark Configuration:")
         print(f"  Iterations per config: {self.config.iterations}")
         print(f"  Detection threshold: {self.config.threshold}")
@@ -325,39 +322,7 @@ class SceneDetectionBenchmark:
                 results.append(result)
                 print(f"  Mem {mem_frac}: {avg_time:.3f}s, {speedup:.2f}x speedup")
 
-        # 4. GPU+NVDEC mode test (if NVDEC available)
-        if self.nvdec_available:
-            print("\n[GPU+NVDEC Mode Test] (batch_size=30)")
-            nvdec_times = []
-            nvdec_memory = []
-            for i in range(self.config.iterations):
-                result = self.run_single_detection(video_path, video_info, "gpu_nvdec", 30, 0.8)
-                if result.error:
-                    print(f"  GPU+NVDEC Run {i + 1}: ERROR - {result.error}")
-                else:
-                    nvdec_times.append(result.detection_time_sec)
-                    nvdec_memory.append(result.gpu_memory_used_mb)
-
-            if nvdec_times:
-                avg_time = sum(nvdec_times) / len(nvdec_times)
-                avg_memory = sum(nvdec_memory) / len(nvdec_memory)
-                speedup = (
-                    self.cpu_baseline[video_name].detection_time_sec / avg_time
-                    if avg_time > 0
-                    else 0
-                )
-                result.detection_time_sec = avg_time
-                result.fps_processed = video_info["total_frames"] / avg_time
-                result.gpu_memory_used_mb = avg_memory
-                results.append(result)
-                print(
-                    f"  GPU+NVDEC: {avg_time:.3f}s, {speedup:.2f}x speedup, "
-                    f"{avg_memory:.1f}MB GPU mem (NVDEC decode + GPU detect)"
-                )
-        else:
-            print("\n[GPU+NVDEC Mode Test] Skipped - NVDEC not available")
-
-        # 5. Auto mode test
+        # 4. Auto mode test
         print("\n[Auto Mode Test]")
         auto_times = []
         for i in range(self.config.iterations):

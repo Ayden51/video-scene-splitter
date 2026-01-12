@@ -36,59 +36,6 @@ def _get_cupy():
 
 
 # =============================================================================
-# Array Type Detection Helper
-# =============================================================================
-
-
-def _is_cupy_array(arr) -> bool:
-    """
-    Check if an array is a CuPy array (already on GPU).
-
-    This function checks the type without importing CuPy if not already loaded,
-    which allows graceful handling of mixed array types.
-
-    Args:
-        arr: Array to check (NumPy, CuPy, or other).
-
-    Returns:
-        bool: True if arr is a CuPy ndarray, False otherwise.
-    """
-    # Check if CuPy is loaded and if array is CuPy type
-    if _cp is not None:
-        return isinstance(arr, _cp.ndarray)
-    # If CuPy not loaded, check by module name
-    return type(arr).__module__.startswith("cupy")
-
-
-def _stack_frames_to_gpu(frames: list):
-    """
-    Stack frames and ensure they're on GPU memory.
-
-    Handles both NumPy arrays (transfers to GPU) and CuPy arrays
-    (stacks directly on GPU without CPU round-trip).
-
-    Args:
-        frames: List of frames as NumPy or CuPy arrays.
-
-    Returns:
-        CuPy array of stacked frames with shape (N, H, W, 3).
-    """
-    cp = _get_cupy()
-
-    if not frames:
-        return cp.array([])
-
-    # Check if frames are already on GPU (CuPy arrays)
-    if _is_cupy_array(frames[0]):
-        # Frames are already on GPU - stack directly
-        return cp.stack(frames, axis=0)
-    else:
-        # Frames are NumPy arrays - transfer to GPU
-        frames_stack = np.stack(frames, axis=0)
-        return cp.asarray(frames_stack)
-
-
-# =============================================================================
 # Color Conversion Helper Functions
 # =============================================================================
 
@@ -426,7 +373,7 @@ def compute_histogram_distance_gpu(frame1: NDArray, frame2: NDArray) -> float:
 
 
 def compute_pixel_difference_batch_gpu(
-    frames: list,
+    frames: list[NDArray],
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """
     Compute pixel differences for a batch of consecutive frame pairs on GPU.
@@ -434,14 +381,8 @@ def compute_pixel_difference_batch_gpu(
     This function processes multiple frames efficiently by keeping data on GPU
     memory and computing all differences in parallel.
 
-    Supports both NumPy arrays (transferred to GPU) and CuPy arrays (already
-    on GPU, e.g., from HardwareVideoReader with to_gpu=True). When frames are
-    already on GPU, no CPU-GPU transfer is needed, eliminating the transfer
-    bottleneck.
-
     Args:
-        frames: List of N+1 frames in BGR format, each (H, W, 3).
-                Can be NumPy arrays or CuPy arrays.
+        frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
                 Computes differences between consecutive pairs (N pairs total).
 
     Returns:
@@ -454,8 +395,9 @@ def compute_pixel_difference_batch_gpu(
     if len(frames) < 2:
         return np.array([]), np.array([])
 
-    # Stack frames - handles both NumPy and CuPy arrays automatically
-    frames_gpu = _stack_frames_to_gpu(frames)
+    # Stack all frames and transfer to GPU
+    frames_stack = np.stack(frames, axis=0)
+    frames_gpu = cp.asarray(frames_stack)
 
     # Convert all frames to grayscale at once
     grays = bgr_to_gray_gpu(frames_gpu)
@@ -475,25 +417,19 @@ def compute_pixel_difference_batch_gpu(
     return cp.asnumpy(mean_diffs), cp.asnumpy(changed_ratios)
 
 
-def compute_histogram_distance_batch_gpu(frames: list) -> NDArray[np.floating]:
+def compute_histogram_distance_batch_gpu(frames: list[NDArray]) -> NDArray[np.floating]:
     """
     Compute histogram distances for a batch of consecutive frame pairs on GPU.
 
     This implementation processes all frames with optimized memory management:
-    1. Single GPU upload for all frames (or direct use if already on GPU)
+    1. Single GPU upload for all frames
     2. Batch HSV conversion
     3. Histogram computation per frame (GPU-accelerated per histogram)
     4. Fully vectorized batch correlation (no GPU→CPU sync per pair)
     5. Single GPU→CPU transfer for final results
 
-    Supports both NumPy arrays (transferred to GPU) and CuPy arrays (already
-    on GPU, e.g., from HardwareVideoReader with to_gpu=True). When frames are
-    already on GPU, no CPU-GPU transfer is needed, eliminating the transfer
-    bottleneck.
-
     Args:
-        frames: List of N+1 frames in BGR format, each (H, W, 3).
-                Can be NumPy arrays or CuPy arrays.
+        frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
                 Computes distances between consecutive pairs (N pairs total).
 
     Returns:
@@ -504,8 +440,10 @@ def compute_histogram_distance_batch_gpu(frames: list) -> NDArray[np.floating]:
     if len(frames) < 2:
         return np.array([])
 
-    # Stack frames - handles both NumPy and CuPy arrays automatically
-    frames_gpu = _stack_frames_to_gpu(frames)
+    # Stack all frames and transfer to GPU (single upload)
+    frames_stack = np.stack(frames, axis=0)
+    frames_gpu = cp.asarray(frames_stack)
+    del frames_stack  # Free CPU memory
 
     # Convert all frames to HSV at once
     hsv_batch = bgr_to_hsv_gpu(frames_gpu)
