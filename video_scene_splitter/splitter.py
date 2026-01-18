@@ -481,6 +481,7 @@ class VideoSceneSplitter:
         """
         # Import GPU functions (lazy import to avoid errors when GPU unavailable)
         from .detection_gpu import (
+            _stack_frames_to_gpu,
             compute_histogram_distance_batch_gpu,
             compute_pixel_difference_batch_gpu,
             free_gpu_memory,
@@ -547,6 +548,7 @@ class VideoSceneSplitter:
                     compute_pixel_difference_batch_gpu,
                     compute_histogram_distance_batch_gpu,
                     free_gpu_memory,
+                    _stack_frames_to_gpu,  # Phase 2: single upload
                 )
 
                 # Keep last frame for next batch overlap
@@ -567,6 +569,7 @@ class VideoSceneSplitter:
                 compute_pixel_difference_batch_gpu,
                 compute_histogram_distance_batch_gpu,
                 free_gpu_memory,
+                _stack_frames_to_gpu,  # Phase 2: single upload
             )
 
         cap.release()
@@ -635,15 +638,21 @@ class VideoSceneSplitter:
         compute_pixel_diff_fn,
         compute_hist_dist_fn,
         free_memory_fn,
+        stack_frames_fn=None,
     ):
         """
         Process a batch of frames on GPU with OOM recovery.
 
         Returns the updated last_scene_frame value.
 
+        Phase 2 optimization: Upload frames to GPU once and pass the GPU array to
+        both metric computations. The metric functions will short-circuit when
+        receiving a CuPy array (no re-stack or re-upload).
+
         When debug=True, timing information is recorded for:
-        - Pixel difference computation (includes np.stack + cp.asarray + compute)
-        - Histogram distance computation (includes np.stack + cp.asarray + compute)
+        - CPU stack + GPU upload time (single upload)
+        - Pixel difference computation time
+        - Histogram distance computation time
         - free_gpu_memory() call
         """
         if len(frame_buffer) < 2:
@@ -652,14 +661,26 @@ class VideoSceneSplitter:
         try:
             batch_start = time.perf_counter() if debug else 0
 
-            # Process batch on GPU - NOTE: Each function does its own np.stack + cp.asarray
-            # This is the "double upload" issue documented in the refactor plan
+            # Phase 2: Upload once, use twice
+            # Stack frames and upload to GPU once
+            if stack_frames_fn is not None:
+                frames_gpu, stack_timing = stack_frames_fn(frame_buffer, debug=debug)
+                stack_ms = stack_timing.get("cpu_stack_ms", 0) if debug else 0
+                gpu_upload_ms = stack_timing.get("gpu_upload_ms", 0) if debug else 0
+            else:
+                # Fallback: pass frame_buffer directly (each function will upload)
+                frames_gpu = frame_buffer
+                stack_ms = 0
+                gpu_upload_ms = 0
+
+            # Compute pixel differences (short-circuits if frames_gpu is CuPy array)
             pixel_start = time.perf_counter() if debug else 0
-            mean_diffs, changed_ratios = compute_pixel_diff_fn(frame_buffer, debug=debug)
+            mean_diffs, changed_ratios = compute_pixel_diff_fn(frames_gpu, debug=debug)
             pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
 
+            # Compute histogram distances (short-circuits if frames_gpu is CuPy array)
             hist_start = time.perf_counter() if debug else 0
-            hist_distances = compute_hist_dist_fn(frame_buffer, debug=debug)
+            hist_distances = compute_hist_dist_fn(frames_gpu, debug=debug)
             hist_time_ms = (time.perf_counter() - hist_start) * 1000 if debug else 0
 
             # Free GPU memory after processing
@@ -672,6 +693,7 @@ class VideoSceneSplitter:
             if debug:
                 print(
                     f"\n  [GPU Batch {len(frame_buffer)} frames] "
+                    f"stack={stack_ms:.1f}ms, upload={gpu_upload_ms:.1f}ms, "
                     f"pixel_diff={pixel_time_ms:.1f}ms, histogram={hist_time_ms:.1f}ms, "
                     f"free_mem={free_time_ms:.1f}ms, total={batch_time_ms:.1f}ms"
                 )

@@ -34,9 +34,12 @@ class BatchTimingInfo:
 
     def __str__(self) -> str:
         return (
-            f"BatchTiming(stack={self.cpu_stack_ms:.2f}ms, upload={self.gpu_upload_ms:.2f}ms, "
-            f"pixel_diff={self.pixel_diff_compute_ms:.2f}ms, histogram={self.histogram_compute_ms:.2f}ms, "
-            f"download={self.gpu_download_ms:.2f}ms, free_mem={self.free_memory_ms:.2f}ms, "
+            f"BatchTiming(stack={self.cpu_stack_ms:.2f}ms, "
+            f"upload={self.gpu_upload_ms:.2f}ms, "
+            f"pixel_diff={self.pixel_diff_compute_ms:.2f}ms, "
+            f"histogram={self.histogram_compute_ms:.2f}ms, "
+            f"download={self.gpu_download_ms:.2f}ms, "
+            f"free_mem={self.free_memory_ms:.2f}ms, "
             f"total={self.total_ms:.2f}ms)"
         )
 
@@ -503,8 +506,14 @@ def compute_pixel_difference_batch_gpu(
     This function processes multiple frames efficiently by keeping data on GPU
     memory and computing all differences in parallel.
 
+    Phase 2 optimization: Short-circuits when receiving a CuPy array (already on GPU).
+    This avoids redundant stacking and uploading when called from _process_gpu_batch()
+    which uses _stack_frames_to_gpu() to upload once.
+
     Args:
-        frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
+        frames: Either:
+                - List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
+                - CuPy array of shape (N+1, H, W, 3) already on GPU.
                 Computes differences between consecutive pairs (N pairs total).
         debug: If True, record detailed timing information.
 
@@ -515,24 +524,36 @@ def compute_pixel_difference_batch_gpu(
     """
     cp = _get_cupy()
 
-    if len(frames) < 2:
-        return np.array([]), np.array([])
+    # Handle both list and array inputs
+    if isinstance(frames, list):
+        if len(frames) < 2:
+            return np.array([]), np.array([])
+    else:
+        if frames.shape[0] < 2:
+            return np.array([]), np.array([])
 
     timing = BatchTimingInfo() if debug else None
     total_start = _time_ms() if debug else 0
 
-    # Stack all frames on CPU
-    stack_start = _time_ms() if debug else 0
-    frames_stack = np.stack(frames, axis=0)
-    if debug:
-        timing.cpu_stack_ms = _time_ms() - stack_start
+    # Phase 2: Short-circuit if already a CuPy array (already on GPU)
+    if hasattr(frames, "__cuda_array_interface__"):
+        frames_gpu = frames
+        if debug:
+            timing.cpu_stack_ms = 0.0
+            timing.gpu_upload_ms = 0.0
+    else:
+        # Stack all frames on CPU
+        stack_start = _time_ms() if debug else 0
+        frames_stack = np.stack(frames, axis=0)
+        if debug:
+            timing.cpu_stack_ms = _time_ms() - stack_start
 
-    # Transfer to GPU
-    upload_start = _time_ms() if debug else 0
-    frames_gpu = cp.asarray(frames_stack)
-    cp.cuda.Stream.null.synchronize()  # Ensure upload completes for accurate timing
-    if debug:
-        timing.gpu_upload_ms = _time_ms() - upload_start
+        # Transfer to GPU
+        upload_start = _time_ms() if debug else 0
+        frames_gpu = cp.asarray(frames_stack)
+        cp.cuda.Stream.null.synchronize()  # Ensure upload completes for accurate timing
+        if debug:
+            timing.gpu_upload_ms = _time_ms() - upload_start
 
     # Compute pixel differences
     compute_start = _time_ms() if debug else 0
@@ -579,8 +600,14 @@ def compute_histogram_distance_batch_gpu(
     4. Fully vectorized batch correlation (no GPU→CPU sync per pair)
     5. Single GPU→CPU transfer for final results
 
+    Phase 2 optimization: Short-circuits when receiving a CuPy array (already on GPU).
+    This avoids redundant stacking and uploading when called from _process_gpu_batch()
+    which uses _stack_frames_to_gpu() to upload once.
+
     Args:
-        frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
+        frames: Either:
+                - List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
+                - CuPy array of shape (N+1, H, W, 3) already on GPU.
                 Computes distances between consecutive pairs (N pairs total).
         debug: If True, record detailed timing information.
 
@@ -589,25 +616,37 @@ def compute_histogram_distance_batch_gpu(
     """
     cp = _get_cupy()
 
-    if len(frames) < 2:
-        return np.array([])
+    # Handle both list and array inputs
+    if isinstance(frames, list):
+        if len(frames) < 2:
+            return np.array([])
+    else:
+        if frames.shape[0] < 2:
+            return np.array([])
 
     timing = BatchTimingInfo() if debug else None
     total_start = _time_ms() if debug else 0
 
-    # Stack all frames on CPU
-    stack_start = _time_ms() if debug else 0
-    frames_stack = np.stack(frames, axis=0)
-    if debug:
-        timing.cpu_stack_ms = _time_ms() - stack_start
+    # Phase 2: Short-circuit if already a CuPy array (already on GPU)
+    if hasattr(frames, "__cuda_array_interface__"):
+        frames_gpu = frames
+        if debug:
+            timing.cpu_stack_ms = 0.0
+            timing.gpu_upload_ms = 0.0
+    else:
+        # Stack all frames on CPU
+        stack_start = _time_ms() if debug else 0
+        frames_stack = np.stack(frames, axis=0)
+        if debug:
+            timing.cpu_stack_ms = _time_ms() - stack_start
 
-    # Transfer to GPU (single upload)
-    upload_start = _time_ms() if debug else 0
-    frames_gpu = cp.asarray(frames_stack)
-    cp.cuda.Stream.null.synchronize()  # Ensure upload completes
-    del frames_stack  # Free CPU memory
-    if debug:
-        timing.gpu_upload_ms = _time_ms() - upload_start
+        # Transfer to GPU (single upload)
+        upload_start = _time_ms() if debug else 0
+        frames_gpu = cp.asarray(frames_stack)
+        cp.cuda.Stream.null.synchronize()  # Ensure upload completes
+        del frames_stack  # Free CPU memory
+        if debug:
+            timing.gpu_upload_ms = _time_ms() - upload_start
 
     # Compute histogram distances
     compute_start = _time_ms() if debug else 0
@@ -658,6 +697,50 @@ def compute_histogram_distance_batch_gpu(
         _accumulated_timings.add(timing)
 
     return result
+
+
+def _stack_frames_to_gpu(frames, debug: bool = False):
+    """
+    Stack frames on CPU and upload to GPU once (Phase 2 optimization helper).
+
+    This helper function performs the CPU stacking and GPU upload operations
+    that were previously duplicated in both compute_pixel_difference_batch_gpu()
+    and compute_histogram_distance_batch_gpu().
+
+    Short-circuits if frames is already a CuPy array (no re-stack or re-upload).
+
+    Args:
+        frames: Either a list of NumPy arrays (frames to stack and upload)
+                or a CuPy array (already on GPU, return as-is).
+        debug: If True, record timing information.
+
+    Returns:
+        tuple: (frames_gpu, timing_dict)
+            - frames_gpu: CuPy array of stacked frames on GPU
+            - timing_dict: Dict with 'cpu_stack_ms' and 'gpu_upload_ms' keys
+    """
+    cp = _get_cupy()
+
+    timing = {"cpu_stack_ms": 0.0, "gpu_upload_ms": 0.0}
+
+    # Short-circuit: if already a CuPy array, return as-is
+    if hasattr(frames, "__cuda_array_interface__"):
+        return frames, timing
+
+    # Stack frames on CPU
+    stack_start = _time_ms() if debug else 0
+    frames_stack = np.stack(frames, axis=0)
+    if debug:
+        timing["cpu_stack_ms"] = _time_ms() - stack_start
+
+    # Upload to GPU
+    upload_start = _time_ms() if debug else 0
+    frames_gpu = cp.asarray(frames_stack)
+    cp.cuda.Stream.null.synchronize()  # Ensure upload completes
+    if debug:
+        timing["gpu_upload_ms"] = _time_ms() - upload_start
+
+    return frames_gpu, timing
 
 
 def free_gpu_memory(debug: bool = False) -> float:
