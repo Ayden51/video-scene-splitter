@@ -1,16 +1,42 @@
 [project]
 name = "video-scene-splitter"
-version = "0.1.1"
-description = "A video processing tool that automatically detects and splits videos at hard cuts using computer vision techniques"
+version = "0.2.0-dev"
+description = "A video processing tool that automatically detects and splits videos at hard cuts using computer vision techniques with optional GPU acceleration"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
+
+# Core dependencies - GPU acceleration is optional and auto-detected at runtime
+# GPU features gracefully fallback to CPU when unavailable
 dependencies = [
-    "numpy>=2.4.0",
-    "opencv-python>=4.11.0.86",
+    # Core dependencies (always required)
+    # NumPy 2.x compatible with CuPy 13.6.0 (tested up to NumPy 2.3)
+    "numpy>=2.0.0,<2.4",
+    "opencv-python>=4.10.0",
 ]
 
 [project.optional-dependencies]
+# GPU acceleration with NVIDIA CUDA 13.x (requires CUDA 13.0+)
+# Install with: uv sync --extra gpu (or pip install .[gpu])
+# CuPy 13.6.0 supports: CUDA 11.2-13.0, Python 3.9-3.13, NumPy 1.22-2.3
+gpu = [
+    "cupy-cuda13x>=13.6.0",
+]
+
+# GPU acceleration with NVIDIA CUDA 12.x (for systems with CUDA 12.x)
+# Install with: uv sync --extra gpu-cuda12 (or pip install .[gpu-cuda12])
+gpu-cuda12 = [
+    "cupy-cuda12x>=13.6.0",
+]
+
+# CPU-only installation (excludes optional GPU dependencies)
+# Install with: uv sync --extra cpu-only (or pip install .[cpu-only])
+cpu-only = [
+    "numpy>=2.0.0,<2.4",
+    "opencv-python>=4.10.0",
+]
+
+# Development dependencies
 dev = [
     "ruff>=0.8.0",
     "pre-commit>=4.0.0",
@@ -21,11 +47,21 @@ dev = [
     "pytest-mock>=3.14.0",
 ]
 
+# Development with GPU testing support (CUDA 13.x)
+dev-gpu = [
+    "video-scene-splitter[dev,gpu]",
+]
+
+# Development with GPU testing support (CUDA 12.x)
+dev-gpu-cuda12 = [
+    "video-scene-splitter[dev,gpu-cuda12]",
+]
+
 [tool.ruff]
 # Set the maximum line length to 100 characters (matching project style guide)
 line-length = 100
-# Target Python 3.14+
-target-version = "py314"
+# Target Python 3.13 (latest version supported by CuPy for GPU acceleration)
+target-version = "py313"
 # Exclude common directories
 exclude = [
     ".git",
@@ -134,10 +170,12 @@ addopts = [
 #   pytest -m unit              # Run only unit tests
 #   pytest -m integration       # Run only integration tests
 #   pytest -m "not slow"        # Skip slow tests
+#   pytest -m "not gpu"         # Skip GPU tests (run on CPU-only systems)
 markers = [
     "unit: Unit tests for individual functions and methods",
     "integration: Integration tests for complete workflows and component interaction",
     "slow: Tests that take significant time to run (e.g., processing large files)",
+    "gpu: Tests requiring CUDA GPU (automatically skipped if GPU unavailable)",
 ]
 
 # ============================================================================
