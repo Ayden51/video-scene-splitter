@@ -34,9 +34,12 @@ class BatchTimingInfo:
 
     def __str__(self) -> str:
         return (
-            f"BatchTiming(stack={self.cpu_stack_ms:.2f}ms, upload={self.gpu_upload_ms:.2f}ms, "
-            f"pixel_diff={self.pixel_diff_compute_ms:.2f}ms, histogram={self.histogram_compute_ms:.2f}ms, "
-            f"download={self.gpu_download_ms:.2f}ms, free_mem={self.free_memory_ms:.2f}ms, "
+            f"BatchTiming(stack={self.cpu_stack_ms:.2f}ms, "
+            f"upload={self.gpu_upload_ms:.2f}ms, "
+            f"pixel_diff={self.pixel_diff_compute_ms:.2f}ms, "
+            f"histogram={self.histogram_compute_ms:.2f}ms, "
+            f"download={self.gpu_download_ms:.2f}ms, "
+            f"free_mem={self.free_memory_ms:.2f}ms, "
             f"total={self.total_ms:.2f}ms)"
         )
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Phase 2 Refactor: Fix Double Upload Per Batch (Performance Optimization)**
+  - **Eliminated redundant GPU uploads**: Previously, each GPU batch was uploading frames twice
+    (once for pixel difference computation, once for histogram computation)
+  - **New `_stack_frames_to_gpu()` helper function** in `detection_gpu.py`:
+    - Accepts frames in any format: CuPy array, list of CuPy arrays, or list of NumPy arrays
+    - Short-circuits when input is already a CuPy array (returns as-is with 0ms overhead)
+    - Stacks on GPU when input is list of CuPy arrays
+    - Stacks on CPU then uploads when input is list of NumPy arrays
+    - Returns timing info for debug mode profiling
+  - **Modified `_process_gpu_batch()` in `splitter.py`**:
+    - Now calls `_stack_frames_to_gpu()` once at the start of batch processing
+    - Passes the GPU array to both metric computations (pixel diff and histogram)
+    - Both metric functions short-circuit when receiving a CuPy array
+  - **Updated `compute_pixel_difference_batch_gpu()` and `compute_histogram_distance_batch_gpu()`**:
+    - Now use `_stack_frames_to_gpu()` for consistent stacking/uploading behavior
+    - Short-circuit when receiving a CuPy array (no re-upload or re-stack)
+  - **Improved debug output**: Separate timing for CPU stack vs GPU upload operations
+  - **Performance improvement**: Single upload per batch instead of double upload,
+    reducing GPU memory bandwidth usage and improving throughput
+
 ### Added
 
 - **NVENC Hardware Encoding Support (Phase 3A)**
