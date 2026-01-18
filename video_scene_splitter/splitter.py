@@ -5,6 +5,7 @@ This module provides the high-level interface for the video scene splitter,
 coordinating between detection algorithms, video processing, and utilities.
 """
 
+import time
 from pathlib import Path
 
 import cv2
@@ -639,17 +640,41 @@ class VideoSceneSplitter:
         Process a batch of frames on GPU with OOM recovery.
 
         Returns the updated last_scene_frame value.
+
+        When debug=True, timing information is recorded for:
+        - Pixel difference computation (includes np.stack + cp.asarray + compute)
+        - Histogram distance computation (includes np.stack + cp.asarray + compute)
+        - free_gpu_memory() call
         """
         if len(frame_buffer) < 2:
             return last_scene_frame
 
         try:
-            # Process batch on GPU
-            mean_diffs, changed_ratios = compute_pixel_diff_fn(frame_buffer)
-            hist_distances = compute_hist_dist_fn(frame_buffer)
+            batch_start = time.perf_counter() if debug else 0
+
+            # Process batch on GPU - NOTE: Each function does its own np.stack + cp.asarray
+            # This is the "double upload" issue documented in the refactor plan
+            pixel_start = time.perf_counter() if debug else 0
+            mean_diffs, changed_ratios = compute_pixel_diff_fn(frame_buffer, debug=debug)
+            pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
+
+            hist_start = time.perf_counter() if debug else 0
+            hist_distances = compute_hist_dist_fn(frame_buffer, debug=debug)
+            hist_time_ms = (time.perf_counter() - hist_start) * 1000 if debug else 0
 
             # Free GPU memory after processing
-            free_memory_fn()
+            free_start = time.perf_counter() if debug else 0
+            free_memory_fn(debug=debug)
+            free_time_ms = (time.perf_counter() - free_start) * 1000 if debug else 0
+
+            batch_time_ms = (time.perf_counter() - batch_start) * 1000 if debug else 0
+
+            if debug:
+                print(
+                    f"\n  [GPU Batch {len(frame_buffer)} frames] "
+                    f"pixel_diff={pixel_time_ms:.1f}ms, histogram={hist_time_ms:.1f}ms, "
+                    f"free_mem={free_time_ms:.1f}ms, total={batch_time_ms:.1f}ms"
+                )
 
         except Exception as e:
             # Handle OOM or other GPU errors - fall back to CPU for this batch
@@ -819,6 +844,11 @@ class VideoSceneSplitter:
         - Histogram: Always CPU (1.35x faster than GPU)
         - Pixel diff: GPU for HD+ (1.5-2x faster), CPU for SD
 
+        When debug=True, timing information is recorded for:
+        - CPU histogram computation
+        - GPU/CPU pixel difference computation
+        - free_gpu_memory() call (if GPU pixel diff used)
+
         Returns the updated last_scene_frame value.
         """
         # Import batch CPU functions locally to avoid import issues
@@ -830,14 +860,26 @@ class VideoSceneSplitter:
         if len(frame_buffer) < 2:
             return last_scene_frame
 
+        batch_start = time.perf_counter() if debug else 0
+
         # Histogram: Always CPU (based on benchmarks)
+        hist_start = time.perf_counter() if debug else 0
         hist_distances = compute_histogram_distance_batch_cpu(frame_buffer)
+        hist_time_ms = (time.perf_counter() - hist_start) * 1000 if debug else 0
 
         # Pixel difference: GPU or CPU based on resolution
+        pixel_start = time.perf_counter() if debug else 0
+        free_time_ms = 0
+        pixel_mode = "GPU" if pixel_processor == ProcessorType.GPU else "CPU"
+
         if pixel_processor == ProcessorType.GPU:
             try:
-                mean_diffs, changed_ratios = compute_pixel_diff_gpu_fn(frame_buffer)
-                free_memory_fn()
+                mean_diffs, changed_ratios = compute_pixel_diff_gpu_fn(frame_buffer, debug=debug)
+                pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
+
+                free_start = time.perf_counter() if debug else 0
+                free_memory_fn(debug=debug)
+                free_time_ms = (time.perf_counter() - free_start) * 1000 if debug else 0
             except Exception as e:
                 # Fall back to CPU on GPU error
                 if "memory" in str(e).lower() or "OutOfMemory" in str(type(e).__name__):
@@ -847,11 +889,23 @@ class VideoSceneSplitter:
                 pixel_results = compute_pixel_difference_batch_cpu(frame_buffer)
                 mean_diffs = [r[0] for r in pixel_results]
                 changed_ratios = [r[1] for r in pixel_results]
+                pixel_mode = "CPU (fallback)"
+                pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
         else:
             # CPU processing
             pixel_results = compute_pixel_difference_batch_cpu(frame_buffer)
             mean_diffs = [r[0] for r in pixel_results]
             changed_ratios = [r[1] for r in pixel_results]
+            pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
+
+        batch_time_ms = (time.perf_counter() - batch_start) * 1000 if debug else 0
+
+        if debug:
+            print(
+                f"\n  [Hybrid Batch {len(frame_buffer)} frames] "
+                f"hist(CPU)={hist_time_ms:.1f}ms, pixel({pixel_mode})={pixel_time_ms:.1f}ms, "
+                f"free={free_time_ms:.1f}ms, total={batch_time_ms:.1f}ms"
+            )
 
         # Process results
         for i in range(len(mean_diffs)):
@@ -922,6 +976,42 @@ class VideoSceneSplitter:
 
             last_dur = duration - self.scene_timestamps[-1]
             print(f"  Scene {len(self.scene_timestamps)}: {last_dur:.2f}s")
+
+        # Print GPU timing summary if in debug mode and GPU was used
+        processor_str = self._processor_request.value if hasattr(self, "_processor_request") else ""
+        if debug and processor_str in ("gpu", "auto"):
+            try:
+                from .detection_gpu import get_accumulated_timings, reset_accumulated_timings
+
+                timings = get_accumulated_timings()
+                summary = timings.get_summary()
+
+                if summary["batch_count"] > 0:
+                    print("\n" + "-" * 50)
+                    print("GPU Timing Summary:")
+                    print(f"  Batches processed: {summary['batch_count']}")
+                    print(f"  Total GPU time: {summary['total_ms']:.1f}ms")
+                    print(f"  Avg batch time: {summary['avg_batch_ms']:.1f}ms")
+                    print(f"  CPU stack time: {summary['cpu_stack_ms']:.1f}ms")
+                    print(f"  GPU upload time: {summary['gpu_upload_ms']:.1f}ms")
+                    print(f"  GPU download time: {summary['gpu_download_ms']:.1f}ms")
+                    print(f"  Pixel diff compute: {summary['pixel_diff_compute_ms']:.1f}ms")
+                    print(f"  Histogram compute: {summary['histogram_compute_ms']:.1f}ms")
+
+                    # Calculate transfer overhead percentage
+                    transfer_time = (
+                        summary["cpu_stack_ms"]
+                        + summary["gpu_upload_ms"]
+                        + summary["gpu_download_ms"]
+                    )
+                    if summary["total_ms"] > 0:
+                        transfer_pct = (transfer_time / summary["total_ms"]) * 100
+                        print(f"  Transfer overhead: {transfer_pct:.1f}%")
+
+                # Reset timings for next run
+                reset_accumulated_timings()
+            except ImportError:
+                pass  # GPU module not available
 
         # Save analysis data if debug mode is enabled
         if debug:

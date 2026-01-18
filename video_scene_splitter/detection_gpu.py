@@ -11,11 +11,132 @@ within a tolerance of 1e-5 for floating point comparisons.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
 from numpy.typing import NDArray
 
 # Lazy-loaded CuPy module
 _cp = None
+
+
+@dataclass
+class BatchTimingInfo:
+    """Timing information for a single batch processing operation."""
+
+    cpu_stack_ms: float = 0.0
+    gpu_upload_ms: float = 0.0
+    pixel_diff_compute_ms: float = 0.0
+    histogram_compute_ms: float = 0.0
+    gpu_download_ms: float = 0.0
+    free_memory_ms: float = 0.0
+    total_ms: float = 0.0
+
+    def __str__(self) -> str:
+        return (
+            f"BatchTiming(stack={self.cpu_stack_ms:.2f}ms, upload={self.gpu_upload_ms:.2f}ms, "
+            f"pixel_diff={self.pixel_diff_compute_ms:.2f}ms, histogram={self.histogram_compute_ms:.2f}ms, "
+            f"download={self.gpu_download_ms:.2f}ms, free_mem={self.free_memory_ms:.2f}ms, "
+            f"total={self.total_ms:.2f}ms)"
+        )
+
+
+@dataclass
+class AccumulatedTimings:
+    """Accumulated timing data across multiple batches for summary reporting."""
+
+    batch_count: int = 0
+    cpu_stack_ms: float = 0.0
+    gpu_upload_ms: float = 0.0
+    pixel_diff_compute_ms: float = 0.0
+    histogram_compute_ms: float = 0.0
+    gpu_download_ms: float = 0.0
+    free_memory_ms: float = 0.0
+    total_ms: float = 0.0
+    timings_list: list[BatchTimingInfo] = field(default_factory=list)
+
+    def add(self, timing: BatchTimingInfo) -> None:
+        """Add a batch timing to the accumulator."""
+        self.batch_count += 1
+        self.cpu_stack_ms += timing.cpu_stack_ms
+        self.gpu_upload_ms += timing.gpu_upload_ms
+        self.pixel_diff_compute_ms += timing.pixel_diff_compute_ms
+        self.histogram_compute_ms += timing.histogram_compute_ms
+        self.gpu_download_ms += timing.gpu_download_ms
+        self.free_memory_ms += timing.free_memory_ms
+        self.total_ms += timing.total_ms
+        self.timings_list.append(timing)
+
+    def summary(self) -> str:
+        """Return a summary string of all accumulated timings."""
+        if self.batch_count == 0:
+            return "No batches processed"
+        return (
+            f"=== GPU Timing Summary ({self.batch_count} batches) ===\n"
+            f"  CPU np.stack:     {self.cpu_stack_ms:8.2f}ms total, "
+            f"{self.cpu_stack_ms / self.batch_count:6.2f}ms avg\n"
+            f"  GPU upload:       {self.gpu_upload_ms:8.2f}ms total, "
+            f"{self.gpu_upload_ms / self.batch_count:6.2f}ms avg\n"
+            f"  Pixel diff:       {self.pixel_diff_compute_ms:8.2f}ms total, "
+            f"{self.pixel_diff_compute_ms / self.batch_count:6.2f}ms avg\n"
+            f"  Histogram:        {self.histogram_compute_ms:8.2f}ms total, "
+            f"{self.histogram_compute_ms / self.batch_count:6.2f}ms avg\n"
+            f"  GPU download:     {self.gpu_download_ms:8.2f}ms total, "
+            f"{self.gpu_download_ms / self.batch_count:6.2f}ms avg\n"
+            f"  free_gpu_memory:  {self.free_memory_ms:8.2f}ms total, "
+            f"{self.free_memory_ms / self.batch_count:6.2f}ms avg\n"
+            f"  -------------------------------------------\n"
+            f"  TOTAL:            {self.total_ms:8.2f}ms total, "
+            f"{self.total_ms / self.batch_count:6.2f}ms avg"
+        )
+
+    def reset(self) -> None:
+        """Reset all accumulated timings."""
+        self.batch_count = 0
+        self.cpu_stack_ms = 0.0
+        self.gpu_upload_ms = 0.0
+        self.pixel_diff_compute_ms = 0.0
+        self.histogram_compute_ms = 0.0
+        self.gpu_download_ms = 0.0
+        self.free_memory_ms = 0.0
+        self.total_ms = 0.0
+        self.timings_list = []
+
+    def get_summary(self) -> dict:
+        """Return a dictionary with all accumulated timing data."""
+        avg_batch_ms = self.total_ms / self.batch_count if self.batch_count > 0 else 0.0
+        return {
+            "batch_count": self.batch_count,
+            "cpu_stack_ms": self.cpu_stack_ms,
+            "gpu_upload_ms": self.gpu_upload_ms,
+            "pixel_diff_compute_ms": self.pixel_diff_compute_ms,
+            "histogram_compute_ms": self.histogram_compute_ms,
+            "gpu_download_ms": self.gpu_download_ms,
+            "free_memory_ms": self.free_memory_ms,
+            "total_ms": self.total_ms,
+            "avg_batch_ms": avg_batch_ms,
+        }
+
+
+# Global timing accumulator for debug mode
+_accumulated_timings = AccumulatedTimings()
+
+
+def get_accumulated_timings() -> AccumulatedTimings:
+    """Get the global accumulated timings object for reporting."""
+    return _accumulated_timings
+
+
+def reset_accumulated_timings() -> None:
+    """Reset the global accumulated timings."""
+    _accumulated_timings.reset()
+
+
+def _time_ms() -> float:
+    """Get current time in milliseconds for timing measurements."""
+    import time
+
+    return time.perf_counter() * 1000
 
 
 def _get_cupy():
@@ -374,6 +495,7 @@ def compute_histogram_distance_gpu(frame1: NDArray, frame2: NDArray) -> float:
 
 def compute_pixel_difference_batch_gpu(
     frames: list[NDArray],
+    debug: bool = False,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """
     Compute pixel differences for a batch of consecutive frame pairs on GPU.
@@ -384,6 +506,7 @@ def compute_pixel_difference_batch_gpu(
     Args:
         frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
                 Computes differences between consecutive pairs (N pairs total).
+        debug: If True, record detailed timing information.
 
     Returns:
         tuple: (mean_diffs, changed_ratios)
@@ -395,9 +518,24 @@ def compute_pixel_difference_batch_gpu(
     if len(frames) < 2:
         return np.array([]), np.array([])
 
-    # Stack all frames and transfer to GPU
+    timing = BatchTimingInfo() if debug else None
+    total_start = _time_ms() if debug else 0
+
+    # Stack all frames on CPU
+    stack_start = _time_ms() if debug else 0
     frames_stack = np.stack(frames, axis=0)
+    if debug:
+        timing.cpu_stack_ms = _time_ms() - stack_start
+
+    # Transfer to GPU
+    upload_start = _time_ms() if debug else 0
     frames_gpu = cp.asarray(frames_stack)
+    cp.cuda.Stream.null.synchronize()  # Ensure upload completes for accurate timing
+    if debug:
+        timing.gpu_upload_ms = _time_ms() - upload_start
+
+    # Compute pixel differences
+    compute_start = _time_ms() if debug else 0
 
     # Convert all frames to grayscale at once
     grays = bgr_to_gray_gpu(frames_gpu)
@@ -412,12 +550,25 @@ def compute_pixel_difference_batch_gpu(
     threshold_masks = diffs > 30
     pixels_per_frame = diffs.shape[1] * diffs.shape[2]
     changed_ratios = cp.sum(threshold_masks, axis=(1, 2)) / pixels_per_frame
+    cp.cuda.Stream.null.synchronize()  # Ensure compute completes
+
+    if debug:
+        timing.pixel_diff_compute_ms = _time_ms() - compute_start
 
     # Transfer results back to CPU
-    return cp.asnumpy(mean_diffs), cp.asnumpy(changed_ratios)
+    download_start = _time_ms() if debug else 0
+    result = cp.asnumpy(mean_diffs), cp.asnumpy(changed_ratios)
+    if debug:
+        timing.gpu_download_ms = _time_ms() - download_start
+        timing.total_ms = _time_ms() - total_start
+        _accumulated_timings.add(timing)
+
+    return result
 
 
-def compute_histogram_distance_batch_gpu(frames: list[NDArray]) -> NDArray[np.floating]:
+def compute_histogram_distance_batch_gpu(
+    frames: list[NDArray], debug: bool = False
+) -> NDArray[np.floating]:
     """
     Compute histogram distances for a batch of consecutive frame pairs on GPU.
 
@@ -431,6 +582,7 @@ def compute_histogram_distance_batch_gpu(frames: list[NDArray]) -> NDArray[np.fl
     Args:
         frames: List of N+1 frames as NumPy arrays in BGR format, each (H, W, 3).
                 Computes distances between consecutive pairs (N pairs total).
+        debug: If True, record detailed timing information.
 
     Returns:
         NumPy array of shape (N,) with combined histogram distances (0-100 scale).
@@ -440,10 +592,25 @@ def compute_histogram_distance_batch_gpu(frames: list[NDArray]) -> NDArray[np.fl
     if len(frames) < 2:
         return np.array([])
 
-    # Stack all frames and transfer to GPU (single upload)
+    timing = BatchTimingInfo() if debug else None
+    total_start = _time_ms() if debug else 0
+
+    # Stack all frames on CPU
+    stack_start = _time_ms() if debug else 0
     frames_stack = np.stack(frames, axis=0)
+    if debug:
+        timing.cpu_stack_ms = _time_ms() - stack_start
+
+    # Transfer to GPU (single upload)
+    upload_start = _time_ms() if debug else 0
     frames_gpu = cp.asarray(frames_stack)
+    cp.cuda.Stream.null.synchronize()  # Ensure upload completes
     del frames_stack  # Free CPU memory
+    if debug:
+        timing.gpu_upload_ms = _time_ms() - upload_start
+
+    # Compute histogram distances
+    compute_start = _time_ms() if debug else 0
 
     # Convert all frames to HSV at once
     hsv_batch = bgr_to_hsv_gpu(frames_gpu)
@@ -472,26 +639,49 @@ def compute_histogram_distance_batch_gpu(frames: list[NDArray]) -> NDArray[np.fl
 
     # Compute weighted distances on GPU (same weights as CPU version)
     distances = (1 - corr_h) * 50 + (1 - corr_s) * 30 + (1 - corr_v) * 20
+    cp.cuda.Stream.null.synchronize()  # Ensure compute completes
+
+    if debug:
+        timing.histogram_compute_ms = _time_ms() - compute_start
 
     # Single GPU→CPU transfer at the end
+    download_start = _time_ms() if debug else 0
     result = cp.asnumpy(distances)
+    if debug:
+        timing.gpu_download_ms = _time_ms() - download_start
 
     # Cleanup correlation arrays
     del corr_h, corr_s, corr_v, distances
 
+    if debug:
+        timing.total_ms = _time_ms() - total_start
+        _accumulated_timings.add(timing)
+
     return result
 
 
-def free_gpu_memory() -> None:
+def free_gpu_memory(debug: bool = False) -> float:
     """
     Release all unused GPU memory from CuPy memory pools.
 
     Call this after processing large batches to free up GPU memory
     for other operations or to prevent memory fragmentation.
+
+    Args:
+        debug: If True, record timing for this operation.
+
+    Returns:
+        float: Time spent in milliseconds (0 if debug=False).
     """
     global _cp
+    start = _time_ms() if debug else 0
+
     if _cp is not None:
         mempool = _cp.get_default_memory_pool()
         pinned_mempool = _cp.get_default_pinned_memory_pool()
         mempool.free_all_blocks()
         pinned_mempool.free_all_blocks()
+        _cp.cuda.Stream.null.synchronize()  # Ensure memory ops complete
+
+    elapsed_ms = _time_ms() - start if debug else 0.0
+    return elapsed_ms
