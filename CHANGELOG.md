@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Phase 3 Refactor: Optimize GPU Memory Management (Performance Optimization)**
+  - **Removed unconditional per-batch GPU memory flushes**: Previously, `free_gpu_memory()` was called
+    after every batch, causing unnecessary memory pool churn and performance degradation
+  - **CuPy memory pool management**: GPU memory is now managed efficiently by CuPy's built-in memory pool
+    - Memory is automatically reused across batches without explicit flushing
+    - Reduces allocator overhead and improves long-running performance
+  - **Strategic memory cleanup**: `free_gpu_memory()` is now only called during error recovery:
+    - When catching GPU OOM (Out of Memory) errors before retrying with smaller batches
+    - When falling back to CPU processing after GPU errors
+  - **Modified `_process_gpu_batch()` and `_process_hybrid_batch()` in `splitter.py`**:
+    - Removed unconditional `free_memory_fn()` calls from normal batch processing flow
+    - Added Phase 3 optimization comments documenting the change
+    - Retained `free_gpu_memory()` calls only in exception handlers for error recovery
+  - **Performance improvement**: Near-zero time spent in memory management during normal operation,
+    eliminating allocator churn that previously degraded performance on long video processing runs
+
 - **Phase 2 Refactor: Fix Double Upload Per Batch (Performance Optimization)**
   - **Eliminated redundant GPU uploads**: Previously, each GPU batch was uploading frames twice
     (once for pixel difference computation, once for histogram computation)
@@ -23,8 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Passes the GPU array to both metric computations (pixel diff and histogram)
     - Both metric functions short-circuit when receiving a CuPy array
   - **Updated `compute_pixel_difference_batch_gpu()` and `compute_histogram_distance_batch_gpu()`**:
-    - Now use `_stack_frames_to_gpu()` for consistent stacking/uploading behavior
+    - Both functions now handle CuPy array inputs with short-circuit logic
     - Short-circuit when receiving a CuPy array (no re-upload or re-stack)
+    - Timing shows 0ms for stack/upload operations when short-circuiting
   - **Improved debug output**: Separate timing for CPU stack vs GPU upload operations
   - **Performance improvement**: Single upload per batch instead of double upload,
     reducing GPU memory bandwidth usage and improving throughput

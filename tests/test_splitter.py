@@ -797,10 +797,10 @@ class TestVideoSceneSplitterGPUErrorHandling:
         splitter.scene_timestamps = [0.0]
 
         # Mock GPU function that raises error
-        def failing_gpu_fn(frames):
+        def failing_gpu_fn(frames, debug=False):
             raise RuntimeError("Simulated GPU memory error")
 
-        def mock_free_memory():
+        def mock_free_memory(debug=False):
             pass
 
         splitter._process_gpu_batch(
@@ -835,10 +835,10 @@ class TestVideoSceneSplitterGPUErrorHandling:
         class OutOfMemoryError(Exception):
             pass
 
-        def oom_gpu_fn(frames):
+        def oom_gpu_fn(frames, debug=False):
             raise OutOfMemoryError("CUDA out of memory")
 
-        def mock_free_memory():
+        def mock_free_memory(debug=False):
             pass
 
         splitter._process_gpu_batch(

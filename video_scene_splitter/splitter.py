@@ -649,11 +649,14 @@ class VideoSceneSplitter:
         both metric computations. The metric functions will short-circuit when
         receiving a CuPy array (no re-stack or re-upload).
 
+        Phase 3 optimization: GPU memory is managed by CuPy's memory pool without
+        per-batch flushes. free_gpu_memory() is only called during error recovery
+        (OOM/GPU errors) before falling back to CPU processing.
+
         When debug=True, timing information is recorded for:
         - CPU stack + GPU upload time (single upload)
         - Pixel difference computation time
         - Histogram distance computation time
-        - free_gpu_memory() call
         """
         if len(frame_buffer) < 2:
             return last_scene_frame
@@ -683,10 +686,9 @@ class VideoSceneSplitter:
             hist_distances = compute_hist_dist_fn(frames_gpu, debug=debug)
             hist_time_ms = (time.perf_counter() - hist_start) * 1000 if debug else 0
 
-            # Free GPU memory after processing
-            free_start = time.perf_counter() if debug else 0
-            free_memory_fn(debug=debug)
-            free_time_ms = (time.perf_counter() - free_start) * 1000 if debug else 0
+            # Phase 3: Removed unconditional free_gpu_memory() per batch
+            # GPU memory is now managed by CuPy's memory pool (no per-batch flush)
+            # free_gpu_memory() is only called during error recovery scenarios
 
             batch_time_ms = (time.perf_counter() - batch_start) * 1000 if debug else 0
 
@@ -695,7 +697,7 @@ class VideoSceneSplitter:
                     f"\n  [GPU Batch {len(frame_buffer)} frames] "
                     f"stack={stack_ms:.1f}ms, upload={gpu_upload_ms:.1f}ms, "
                     f"pixel_diff={pixel_time_ms:.1f}ms, histogram={hist_time_ms:.1f}ms, "
-                    f"free_mem={free_time_ms:.1f}ms, total={batch_time_ms:.1f}ms"
+                    f"total={batch_time_ms:.1f}ms"
                 )
 
         except Exception as e:
@@ -704,6 +706,9 @@ class VideoSceneSplitter:
                 print(f"\n⚠ GPU memory error, processing batch on CPU: {e}")
             else:
                 print(f"\n⚠ GPU error, processing batch on CPU: {e}")
+
+            # Phase 3: Free GPU memory only during error recovery before CPU fallback
+            free_memory_fn(debug=debug)
 
             # Fall back to CPU processing for this batch
             return self._process_cpu_batch_fallback(
@@ -866,10 +871,13 @@ class VideoSceneSplitter:
         - Histogram: Always CPU (1.35x faster than GPU)
         - Pixel diff: GPU for HD+ (1.5-2x faster), CPU for SD
 
+        Phase 3 optimization: GPU memory is managed by CuPy's memory pool without
+        per-batch flushes. free_gpu_memory() is only called during error recovery
+        (OOM/GPU errors) before falling back to CPU processing.
+
         When debug=True, timing information is recorded for:
         - CPU histogram computation
         - GPU/CPU pixel difference computation
-        - free_gpu_memory() call (if GPU pixel diff used)
 
         Returns the updated last_scene_frame value.
         """
@@ -891,23 +899,22 @@ class VideoSceneSplitter:
 
         # Pixel difference: GPU or CPU based on resolution
         pixel_start = time.perf_counter() if debug else 0
-        free_time_ms = 0
         pixel_mode = "GPU" if pixel_processor == ProcessorType.GPU else "CPU"
 
         if pixel_processor == ProcessorType.GPU:
             try:
                 mean_diffs, changed_ratios = compute_pixel_diff_gpu_fn(frame_buffer, debug=debug)
                 pixel_time_ms = (time.perf_counter() - pixel_start) * 1000 if debug else 0
-
-                free_start = time.perf_counter() if debug else 0
-                free_memory_fn(debug=debug)
-                free_time_ms = (time.perf_counter() - free_start) * 1000 if debug else 0
+                # Phase 3: No unconditional free_gpu_memory() per batch
+                # GPU memory managed by CuPy's memory pool
             except Exception as e:
                 # Fall back to CPU on GPU error
                 if "memory" in str(e).lower() or "OutOfMemory" in str(type(e).__name__):
                     print(f"\n⚠ GPU memory error, using CPU for pixel diff: {e}")
                 else:
                     print(f"\n⚠ GPU error, using CPU for pixel diff: {e}")
+                # Phase 3: Free GPU memory only during error recovery
+                free_memory_fn(debug=debug)
                 pixel_results = compute_pixel_difference_batch_cpu(frame_buffer)
                 mean_diffs = [r[0] for r in pixel_results]
                 changed_ratios = [r[1] for r in pixel_results]
@@ -926,7 +933,7 @@ class VideoSceneSplitter:
             print(
                 f"\n  [Hybrid Batch {len(frame_buffer)} frames] "
                 f"hist(CPU)={hist_time_ms:.1f}ms, pixel({pixel_mode})={pixel_time_ms:.1f}ms, "
-                f"free={free_time_ms:.1f}ms, total={batch_time_ms:.1f}ms"
+                f"total={batch_time_ms:.1f}ms"
             )
 
         # Process results
