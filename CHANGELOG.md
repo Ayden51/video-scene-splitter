@@ -5,6 +5,150 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Phase 3 Refactor: Optimize GPU Memory Management (Performance Optimization)**
+  - **Removed unconditional per-batch GPU memory flushes**: Previously, `free_gpu_memory()` was called
+    after every batch, causing unnecessary memory pool churn and performance degradation
+  - **CuPy memory pool management**: GPU memory is now managed efficiently by CuPy's built-in memory pool
+    - Memory is automatically reused across batches without explicit flushing
+    - Reduces allocator overhead and improves long-running performance
+  - **Strategic memory cleanup**: `free_gpu_memory()` is now only called during error recovery:
+    - When catching GPU OOM (Out of Memory) errors before retrying with smaller batches
+    - When falling back to CPU processing after GPU errors
+  - **Modified `_process_gpu_batch()` and `_process_hybrid_batch()` in `splitter.py`**:
+    - Removed unconditional `free_memory_fn()` calls from normal batch processing flow
+    - Added Phase 3 optimization comments documenting the change
+    - Retained `free_gpu_memory()` calls only in exception handlers for error recovery
+  - **Performance improvement**: Near-zero time spent in memory management during normal operation,
+    eliminating allocator churn that previously degraded performance on long video processing runs
+
+- **Phase 2 Refactor: Fix Double Upload Per Batch (Performance Optimization)**
+  - **Eliminated redundant GPU uploads**: Previously, each GPU batch was uploading frames twice
+    (once for pixel difference computation, once for histogram computation)
+  - **New `_stack_frames_to_gpu()` helper function** in `detection_gpu.py`:
+    - Accepts frames in any format: CuPy array, list of CuPy arrays, or list of NumPy arrays
+    - Short-circuits when input is already a CuPy array (returns as-is with 0ms overhead)
+    - Stacks on GPU when input is list of CuPy arrays
+    - Stacks on CPU then uploads when input is list of NumPy arrays
+    - Returns timing info for debug mode profiling
+  - **Modified `_process_gpu_batch()` in `splitter.py`**:
+    - Now calls `_stack_frames_to_gpu()` once at the start of batch processing
+    - Passes the GPU array to both metric computations (pixel diff and histogram)
+    - Both metric functions short-circuit when receiving a CuPy array
+  - **Updated `compute_pixel_difference_batch_gpu()` and `compute_histogram_distance_batch_gpu()`**:
+    - Both functions now handle CuPy array inputs with short-circuit logic
+    - Short-circuit when receiving a CuPy array (no re-upload or re-stack)
+    - Timing shows 0ms for stack/upload operations when short-circuiting
+  - **Improved debug output**: Separate timing for CPU stack vs GPU upload operations
+  - **Performance improvement**: Single upload per batch instead of double upload,
+    reducing GPU memory bandwidth usage and improving throughput
+
+### Added
+
+- **NVENC Hardware Encoding Support (Phase 3A)**
+  - `detect_nvenc_support()`: Detects NVENC encoder availability via FFmpeg
+  - `get_encoder_options()`: Returns appropriate FFmpeg encoder arguments based on processor mode
+    - "cpu": Always uses libx264 (software encoding)
+    - "gpu": Requires NVENC, raises error if unavailable
+    - "auto": Uses NVENC if available, falls back to libx264
+  - `get_encoder_info()`: Returns encoder metadata for status display
+  - NVENC configuration: h264_nvenc codec, p4 preset (balanced), VBR rate control, CQ 23
+  - Hardware encoding provides 3-8x speedup over libx264
+
+- **Multi-threaded Async Frame Reading (Phase 3A)**
+  - `AsyncFrameReader` class: Producer-consumer pattern with double buffering
+    - Prefetches next batch while GPU processes current batch
+    - Context manager support for resource cleanup
+    - Thread-safe operation with ThreadPoolExecutor
+  - `read_frames_async()`: Generator function for async frame reading
+    - Overlaps CPU I/O with GPU computation
+    - Provides 10-20% overall speedup when combined with GPU processing
+  - `_read_batch()`: Helper function for batch frame reading
+
+- **24 new NVENC and async reading tests** in `tests/test_video_processor.py`
+  - NVENC encoder detection tests (available, unavailable, caching, timeout)
+  - NVENC encoding tests for auto, gpu, and cpu modes
+  - libx264 fallback tests when NVENC unavailable
+  - AsyncFrameReader iteration, context manager, and prefetching tests
+  - Thread safety and partial batch handling tests
+
+- **Hybrid CPU/GPU processing (Phase 2B) - AUTO mode**
+  - `AutoModeConfig` dataclass for configuring hybrid processing behavior
+    - `min_resolution_for_gpu`: Minimum resolution to use GPU (default: 720p)
+    - `use_gpu_for_pixel_diff`: GPU for pixel diff on HD+ (default: True)
+    - `use_gpu_for_histogram`: CPU for histogram (default: False - 1.35x faster)
+    - Resolution-based batch size caps (SD=60, HD=30, 4K=15 frames)
+  - `select_operation_processor()`: Per-operation processor selection function
+    - Returns CPU for histogram computation (always - benchmarked 1.35x faster)
+    - Returns GPU for pixel diff on HD+ content (≥720p - benchmarked 1.29x faster)
+    - Returns CPU for SD content (transfer overhead too high)
+  - `get_resolution_batch_size_cap()`: Resolution-aware batch size selection
+  - `_detect_scenes_hybrid()`: New hybrid detection pipeline in VideoSceneSplitter
+    - Automatically selects optimal processor per operation based on resolution
+    - GPU pixel diff + CPU histogram for HD+ content
+    - Full CPU processing for SD content (optimal for small frames)
+    - GPU OOM error handling with automatic CPU fallback
+  - `compute_pixel_difference_batch_cpu()`: CPU batch pixel difference for hybrid mode
+  - `compute_histogram_distance_batch_cpu()`: CPU batch histogram for hybrid mode
+  - Updated routing logic in `detect_scenes()` to dispatch to hybrid mode for AUTO
+
+- **GPU-accelerated scene detection algorithms (Phase 2A)**
+  - `compute_pixel_difference_gpu()`: Single frame pair pixel difference on GPU
+  - `compute_histogram_distance_gpu()`: Single frame pair histogram distance on GPU
+  - `compute_pixel_difference_batch_gpu()`: Batch processing for pixel difference (5-120 frames)
+  - `compute_histogram_distance_batch_gpu()`: Batch processing for histogram distance
+  - `histogram_correlation_batch_gpu()`: Vectorized batch correlation without Python loops
+  - `bgr_to_gray_gpu()` and `bgr_to_hsv_gpu()`: Color space conversion helpers
+  - `free_gpu_memory()`: Explicit GPU memory cleanup function
+
+- **Enhanced debug mode with detailed GPU hardware information**
+  - Debug mode (`debug=True`) now displays comprehensive GPU hardware details including:
+    - GPU name, memory (total and free), CUDA version, driver version
+    - Compute capability and backend information
+    - Processor mode and acceleration status
+  - Normal mode (`debug=False`) shows brief, user-friendly status messages
+  - Helps users verify GPU detection and troubleshoot hardware acceleration issues
+  - Updated `print_gpu_status()` function to accept `debug` parameter for conditional output
+
+- **GPU benchmarking infrastructure**
+  - `benchmarks/gpu_benchmark.py`: Comprehensive GPU vs CPU performance testing
+  - Support for SD, HD, and 4K video benchmarking
+  - Batch size variation testing (5, 15, 30, 60 frames)
+  - Results documentation in `benchmarks/results/`
+
+- **45 new GPU detection tests** in `tests/test_detection_gpu.py`
+  - Single frame pair GPU tests for pixel difference and histogram distance
+  - Batch processing tests with various sizes (2, 5, 10, 15, 30, 61 frames)
+  - GPU vs CPU result consistency tests (tolerance: pixel 1e-5, histogram rel=0.3)
+  - GPU memory management tests
+  - Color space conversion tests (BGR to Gray, BGR to HSV)
+
+### Changed
+
+- **Improved GPU histogram performance** from 0.32x to 0.77x of CPU speed
+  - Vectorized batch histogram correlation (removed per-pair Python loops)
+  - Added explicit memory cleanup with `del` statements
+  - GPU histogram now competitive at 0.7-0.8x of CPU (was 0.3x before)
+
+### Performance
+
+- **GPU Pixel Difference**: 1.19-1.43x speedup for HD video (1080p)
+- **GPU Histogram Distance**: 0.69-0.77x of CPU (improved from 0.32x)
+- **Overall**: GPU provides meaningful speedup for HD pixel difference; histogram is acceptable
+
+### Technical Notes
+
+- **Hybrid processing strategy** (AUTO mode):
+  - Histogram: Always CPU (1.35x faster than GPU due to transfer overhead)
+  - Pixel diff: GPU for HD+ (≥720p), CPU for SD (transfer overhead dominates)
+  - This strategy provides optimal performance across all video resolutions
+- GPU detection algorithms require CuPy with CUDA 13.0+
+- Histogram counting still requires loop (scatter operation limitation)
+- Full histogram parallelization requires custom CUDA kernels (planned for v0.3.0+)
+
 ## [0.1.1] - 2026-01-06
 
 This patch release improves documentation, fixes configuration defaults, and enhances the user experience for new users.

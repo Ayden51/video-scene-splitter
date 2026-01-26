@@ -150,3 +150,69 @@ def is_hard_cut(hist_dist, pixel_diff, changed_ratio, threshold, frames_since_la
         and changed_ratio > 0.2
         and frames_since_last >= min_frame_gap
     )
+
+
+def compute_pixel_difference_batch_cpu(frames: list) -> list[tuple[float, float]]:
+    """
+    Compute pixel differences for a batch of consecutive frames on CPU.
+
+    This is the CPU implementation for batch processing, used in hybrid mode
+    when GPU is not beneficial (e.g., for SD content or when GPU is unavailable).
+
+    Args:
+        frames: List of frames in BGR format. Must have at least 2 frames.
+            Each frame shape: (height, width, 3)
+
+    Returns:
+        List of (mean_diff, changed_ratio) tuples for each consecutive frame pair.
+        Length will be len(frames) - 1.
+
+    Example:
+        >>> frames = [frame1, frame2, frame3]
+        >>> results = compute_pixel_difference_batch_cpu(frames)
+        >>> # results[0] = difference between frame1 and frame2
+        >>> # results[1] = difference between frame2 and frame3
+    """
+    if len(frames) < 2:
+        return []
+
+    results = []
+    for i in range(len(frames) - 1):
+        mean_diff, changed_ratio = compute_pixel_difference(frames[i], frames[i + 1])
+        results.append((mean_diff, changed_ratio))
+
+    return results
+
+
+def compute_histogram_distance_batch_cpu(frames: list) -> list[float]:
+    """
+    Compute histogram distances for a batch of consecutive frames on CPU.
+
+    This is the CPU implementation for batch processing, used in hybrid mode.
+    Based on Phase 2A/2B benchmarks, CPU histogram is 1.35x faster than GPU
+    due to transfer overhead, so this is the preferred method for histogram
+    computation even when GPU is available.
+
+    Args:
+        frames: List of frames in BGR format. Must have at least 2 frames.
+            Each frame shape: (height, width, 3)
+
+    Returns:
+        List of histogram distances for each consecutive frame pair.
+        Length will be len(frames) - 1.
+
+    Example:
+        >>> frames = [frame1, frame2, frame3]
+        >>> distances = compute_histogram_distance_batch_cpu(frames)
+        >>> # distances[0] = histogram distance between frame1 and frame2
+        >>> # distances[1] = histogram distance between frame2 and frame3
+    """
+    if len(frames) < 2:
+        return []
+
+    distances = []
+    for i in range(len(frames) - 1):
+        dist = compute_histogram_distance(frames[i], frames[i + 1])
+        distances.append(dist)
+
+    return distances
