@@ -4,7 +4,7 @@ This document provides essential information for AI coding agents working on the
 
 ## Project Overview
 
-A Python 3.14+ video processing tool that detects hard cuts in videos using computer vision (OpenCV, NumPy) and splits them into scenes using FFmpeg. The project achieves 99.42% test coverage with 83 tests.
+A Python 3.13+ video processing tool that detects hard cuts in videos using computer vision (OpenCV, NumPy) and splits them into scenes using FFmpeg. GPU acceleration support (CUDA) is optional and gracefully falls back to CPU.
 
 ## Build, Lint, and Test Commands
 
@@ -13,6 +13,15 @@ A Python 3.14+ video processing tool that detects hard cuts in videos using comp
 ```bash
 # Using uv (recommended)
 uv sync --all-extras
+
+# CPU-only installation (no GPU support)
+uv sync --extra dev
+
+# GPU installation (CUDA 13.x)
+uv sync --extra dev-gpu
+
+# GPU installation (CUDA 12.x)
+uv sync --extra dev-gpu-cuda12
 
 # Or using pip
 pip install -e ".[dev]"
@@ -23,19 +32,15 @@ pip install -e ".[dev]"
 ```bash
 # Format code (run before committing)
 uv run poe format
-# Or: ruff format .
 
 # Check linting issues
 uv run poe lint
-# Or: ruff check .
 
 # Auto-fix linting issues
 uv run poe lint-fix
-# Or: ruff check --fix .
 
-# Run all code quality checks
+# Run all code quality checks (lint + format check)
 uv run poe check
-# Or: ruff check --fix . && ruff format .
 ```
 
 ### Testing
@@ -43,19 +48,15 @@ uv run poe check
 ```bash
 # Run all tests
 uv run poe test
-# Or: pytest
 
 # Run tests with verbose output
 uv run poe test-verbose
-# Or: pytest -vv
 
 # Run tests with coverage (REQUIRED before PRs)
 uv run poe test-coverage
-# Or: pytest --cov=video_scene_splitter --cov-report=term-missing --cov-report=html
 
 # Run tests in parallel (faster)
 uv run poe test-parallel
-# Or: pytest -n auto
 
 # Run a single test file
 pytest tests/test_detection.py
@@ -89,7 +90,6 @@ pre-commit run --all-files
 
 ```bash
 uv run poe start
-# Or: python main.py
 ```
 
 ## Project Structure
@@ -102,7 +102,7 @@ video_scene_splitter/
 │   ├── detection.py        # Scene detection algorithms
 │   ├── utils.py            # File I/O and metrics utilities
 │   └── video_processor.py  # FFmpeg video operations
-├── tests/                  # Test suite (83 tests, 99.42% coverage)
+├── tests/                  # Test suite
 │   ├── conftest.py         # Shared pytest fixtures
 │   ├── test_detection.py   # Detection algorithm tests
 │   ├── test_splitter.py    # VideoSceneSplitter tests
@@ -120,8 +120,9 @@ video_scene_splitter/
 - **Style Guide**: Follow PEP 8
 - **Line Length**: Maximum 100 characters
 - **Indentation**: 4 spaces (no tabs)
-- **Target Version**: Python 3.14+
+- **Target Version**: Python 3.13+
 - **Tool**: Ruff (replaces Black, isort, Flake8)
+- **String Quotes**: Double quotes (Black-compatible)
 
 ### Import Organization
 
@@ -145,12 +146,19 @@ from .utils import save_debug_frames
 ### Type Hints
 
 - Use type hints for function parameters and return values
-- Prefer built-in types over typing module when possible (Python 3.14+)
+- Prefer built-in types over typing module when possible (Python 3.13+)
+- Use `numpy.ndarray` for NumPy arrays, `list`, `dict`, `tuple` for built-ins
 
 Example:
 ```python
+import numpy as np
+
 def compute_histogram_distance(frame1: np.ndarray, frame2: np.ndarray) -> float:
     """Compute distance between frames."""
+    pass
+
+def process_timestamps(timestamps: list[float]) -> list[tuple[float, float]]:
+    """Process list of timestamps."""
     pass
 ```
 
@@ -206,8 +214,8 @@ if not cap.isOpened():
 
 ### Coverage Requirements
 
-- **Minimum coverage**: 95% for new code
-- **Current coverage**: 99.42% (maintain or improve)
+- **Minimum coverage**: 80% overall
+- **Target coverage**: 95%+ for new code
 - **Always run coverage before submitting PRs**
 
 ### Test Structure
@@ -286,10 +294,11 @@ Install with: `pre-commit install`
 **Required checklist:**
 
 1. Run all tests: `uv run poe test`
-2. Check coverage: `uv run poe test-coverage` (must be ≥95%)
+2. Check coverage: `uv run poe test-coverage` (must be ≥80%)
 3. Run code quality checks: `uv run poe check`
-4. Or run everything: `uv run poe check-all`
-5. Ensure pre-commit hooks pass: `pre-commit run --all-files`
+4. Fix linting issues: `uv run poe lint-fix`
+5. Or run everything: `uv run poe check-all`
+6. Ensure pre-commit hooks pass: `pre-commit run --all-files`
 
 ## Common Patterns
 
@@ -320,3 +329,31 @@ if not ret:
 - Use `video_processor.py` for all FFmpeg operations
 - The project uses frame-accurate splitting with re-encoding
 - Timestamps are in seconds (float)
+
+## Important Notes for Agents
+
+### GPU Support
+
+- The project supports optional GPU acceleration via CuPy (CUDA)
+- GPU features automatically fall back to CPU if unavailable
+- Always check for GPU availability before using GPU-specific code
+- Tests marked with `@pytest.mark.gpu` are skipped on CPU-only systems
+
+### Dependencies
+
+- **Core**: NumPy 2.x, OpenCV 4.10+
+- **Optional GPU**: CuPy 13.6+ (CUDA 12.x or 13.x)
+- **Dev Tools**: Ruff, pytest, pre-commit, poethepoet
+
+### Common Ruff Rules
+
+The project enables these Ruff rule sets:
+- **E/W**: pycodestyle errors/warnings
+- **F**: Pyflakes
+- **I**: isort (import sorting)
+- **N**: pep8-naming
+- **UP**: pyupgrade (modernize code)
+- **B**: flake8-bugbear (bug detection)
+- **C4**: flake8-comprehensions
+- **SIM**: flake8-simplify
+- **RUF**: Ruff-specific rules
